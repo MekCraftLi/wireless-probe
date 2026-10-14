@@ -1,0 +1,59 @@
+import socket
+import struct
+
+PROBE_IP = "192.168.4.1"
+PROBE_PORT = 3240
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+s.settimeout(5.0)
+s.connect((PROBE_IP, PROBE_PORT))
+
+def xfer(req):
+    s.sendall(bytes(req))
+    return s.recv(2048)
+
+# Connect & configure
+xfer([0x02, 0x01]) # Connect
+xfer(bytes([0x11]) + struct.pack("<I", 3000000)) # 3MHz
+xfer([0x04, 0x00, 0x32, 0x00, 0x00, 0x00])
+
+# Sync SWD
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 16, 0x9E, 0xE7])
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 8, 0x00])
+
+r = xfer([0x05, 0x00, 0x01, 0x02])
+dpidr = struct.unpack("<I", r[3:7])[0]
+print(f"DPIDR: 0x{dpidr:08X}")
+
+# Setup AP 0, CSW
+xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50]) # PWRUP
+xfer([0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00]) # AP 0
+xfer([0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23]) # CSW 32-bit auto-inc
+
+# Set TAR to 0x24000000 (AXI SRAM)
+xfer([0x05, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x24])
+
+# Write 4 words using DAP_TransferBlock with req=0x0D (AP DRW write)
+test_vals = [0x11223344, 0x55667788, 0x99AABBCC, 0xDDEEFF00]
+payload = struct.pack("<4I", *test_vals)
+req = bytes([0x06, 0x00, 0x04, 0x00, 0x0D]) + payload
+resp = xfer(req)
+print("Write resp:", list(resp))
+
+# Re-set TAR to 0x24000000
+xfer([0x05, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x24])
+
+# Read 4 words using DAP_TransferBlock with req=0x0F (AP DRW read)
+req_read = bytes([0x06, 0x00, 0x04, 0x00, 0x0F])
+resp_read = xfer(req_read)
+print("Read resp len:", len(resp_read), "Header:", list(resp_read[:4]))
+if len(resp_read) >= 20:
+    words = struct.unpack("<4I", resp_read[4:20])
+    print("Read words:", [f"0x{w:08X}" for w in words])
+    match = (list(words) == test_vals)
+    print(f"Match: {match}")
+
+s.close()

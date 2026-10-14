@@ -1,0 +1,50 @@
+import socket
+import struct
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+s.settimeout(5.0)
+s.connect(("192.168.4.1", 3240))
+
+def xfer(req):
+    s.sendall(bytes(req))
+    resp = s.recv(2048)
+    return resp
+
+xfer([0x02, 0x01])
+xfer(bytes([0x11]) + struct.pack("<I", 2500000))
+xfer([0x04, 0x00, 0x32, 0x00, 0x00, 0x00])
+
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 16, 0x9E, 0xE7])
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 8, 0x00])
+
+xfer([0x05, 0x00, 0x01, 0x02])
+xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
+xfer([0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00])
+xfer([0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23])
+
+def test_addr(addr, name):
+    tar_b = list(struct.pack("<I", addr))
+    r = xfer([0x05, 0x00, 0x02, 0x05] + tar_b + [0x0F])
+    print(f"Read {name:12s} @ 0x{addr:08X}: {[hex(b) for b in r]}")
+    # Now try batched read
+    req_batch = [0x05, 0x00, 8]
+    for a in [0xE000ED00, 0xE000ED04, 0xE000ED08, 0xE000ED0C]:
+        tb = list(struct.pack("<I", a))
+        req_batch += [0x05] + tb + [0x0F]
+    rb = xfer(req_batch)
+    print(f"  -> Batched after {name:12s}: len={len(rb)}, count={rb[1]}, ack={rb[2]}")
+
+test_addr(0xE000ED00, "CPUID")
+test_addr(0x58024400, "DBGMCU_IDC")
+test_addr(0x58024404, "DBGMCU_CR")
+test_addr(0x58000400, "RCC_CR")
+test_addr(0x58000410, "RCC_CFGR")
+test_addr(0x24000000, "AXI_SRAM")
+test_addr(0x38000000, "SRAM4")
+test_addr(0x08000000, "FLASH")
+test_addr(0x20000000, "DTCM")
+
+s.close()

@@ -1,0 +1,66 @@
+import socket
+import struct
+import time
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+s.settimeout(5.0)
+s.connect(("192.168.4.1", 3240))
+
+def xfer(req):
+    s.sendall(bytes(req))
+    resp = s.recv(2048)
+    return resp
+
+# Init
+xfer([0x02, 0x01])
+xfer(bytes([0x11]) + struct.pack("<I", 2500000))
+xfer([0x04, 0x00, 0x32, 0x00, 0x00, 0x00])
+
+# Sync SWD
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 16, 0x9E, 0xE7])
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 8, 0x00])
+
+# DPIDR
+r = xfer([0x05, 0x00, 0x01, 0x02])
+print("DPIDR:", [hex(b) for b in r])
+
+# Power up
+xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
+xfer([0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00])
+xfer([0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23])
+
+# Run 10 cycles of 1B
+req_batch = [0x05, 0x00, 9]
+for addr in [0xE000ED00, 0xE000ED04, 0xE000ED08, 0xE000ED0C]:
+    tar_b = list(struct.pack("<I", addr))
+    req_batch += [0x05] + tar_b + [0x0F]
+req_batch += [0x0E]
+
+for i in range(10):
+    r = xfer(req_batch)
+    if i == 0:
+        print("1B cycle 0 resp:", list(r))
+
+# Check DP status
+r = xfer([0x05, 0x00, 0x01, 0x06])
+print("DP CTRL/STAT after 1B:", list(r))
+
+# Now try setting TAR to 0x24000000
+r = xfer([0x05, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x24])
+print("Set TAR resp:", list(r))
+
+# Now try Write Block (64 words)
+WORDS_PER_BLOCK = 64
+payload = b"\x55" * (WORDS_PER_BLOCK * 4)
+req = bytes([0x06, 0x00, WORDS_PER_BLOCK & 0xFF, (WORDS_PER_BLOCK >> 8) & 0xFF, 0x0D]) + payload
+resp = xfer(req)
+print("Write block resp:", list(resp))
+
+# Check DP status again
+r = xfer([0x05, 0x00, 0x01, 0x06])
+print("DP CTRL/STAT after Write Block:", list(r))
+
+s.close()

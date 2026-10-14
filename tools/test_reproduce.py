@@ -1,0 +1,56 @@
+import socket
+import struct
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+s.settimeout(5.0)
+s.connect(("192.168.4.1", 3240))
+
+def xfer(req):
+    s.sendall(bytes(req))
+    resp = s.recv(2048)
+    return resp
+
+xfer([0x02, 0x01])
+xfer(bytes([0x11]) + struct.pack("<I", 2500000))
+xfer([0x04, 0x00, 0x32, 0x00, 0x00, 0x00])
+
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 16, 0x9E, 0xE7])
+xfer([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+xfer([0x12, 8, 0x00])
+
+xfer([0x05, 0x00, 0x01, 0x02])
+xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
+xfer([0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00])
+xfer([0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23])
+
+# Test Flash (0x08000000)
+tar_b = list(struct.pack("<I", 0x08000000))
+r1 = xfer([0x05, 0x00, 0x02, 0x05] + tar_b + [0x0F])
+val1 = struct.unpack("<I", r1[3:7])[0] if len(r1) >= 7 else 0
+print(f"Flash read @ 0x08000000: 0x{val1:08X}, raw: {[hex(b) for b in r1]}")
+
+# Test SRAM4 (0x38000000)
+tar_b = list(struct.pack("<I", 0x38000000))
+r2 = xfer([0x05, 0x00, 0x02, 0x05] + tar_b + [0x0F])
+val2 = struct.unpack("<I", r2[3:7])[0] if len(r2) >= 7 else 0
+print(f"SRAM4 read @ 0x38000000: 0x{val2:08X}, raw: {[hex(b) for b in r2]}")
+
+# Test AXI SRAM (0x24000000)
+tar_b = list(struct.pack("<I", 0x24000000))
+r3 = xfer([0x05, 0x00, 0x02, 0x05] + tar_b + [0x0F])
+val3 = struct.unpack("<I", r3[3:7])[0] if len(r3) >= 7 else 0
+print(f"AXI SRAM @ 0x24000000: 0x{val3:08X}, raw: {[hex(b) for b in r3]}")
+
+# Batched read
+addrs = [0xE000ED00, 0xE000ED04, 0xE000ED08, 0xE000ED0C]
+req_batch = [0x05, 0x00, 8]
+for addr in addrs:
+    tar_b = list(struct.pack("<I", addr))
+    req_batch += [0x05] + tar_b + [0x0F]
+
+rb = xfer(req_batch)
+print("Batched read:", [hex(b) for b in rb])
+
+s.close()
