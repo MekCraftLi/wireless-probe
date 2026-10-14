@@ -1,0 +1,55 @@
+;
+; High-Speed Quad-SPI Master PIO for RP2350 (4-bit Quad SPI)
+; Pin layout:
+;   Side-set pin: CLK (GP16)
+;   OUT / IN pins: D0, D1, D2, D3 (GP18, GP19, GP20, GP21)
+;
+
+.program qspi_cmd
+.side_set 1
+
+; Mode 0: 4 cycles per bit. CLK idle low (side 0).
+; Takes 24 bits (8 cmd + 8 addr + 8 dummy) and transmits with full clock pulses.
+; Pushes 1 token to RX FIFO when all 24 bits are complete.
+    pull block          side 0
+    set x, 23           side 0
+cmd_bit_loop:
+    out pins, 1         side 0
+    nop                 side 1 [1]
+    jmp x-- cmd_bit_loop side 0
+    push noblock        side 0
+
+
+.program qspi_tx
+.side_set 1
+
+; Mode 0: 4 cycles per nibble. CLK idle low (side 0).
+; Transmits 1 word (8 nibbles) with full clock pulses.
+; Pushes 1 token to RX FIFO when word is complete.
+.wrap_target
+    pull block          side 0
+    set x, 7            side 0
+tx_nibble_loop:
+    out pins, 4         side 0
+    nop                 side 1 [1]
+    jmp x-- tx_nibble_loop side 0
+    push noblock        side 0
+.wrap
+
+
+.program qspi_rx
+.side_set 1
+
+; Mode 0: 4 cycles per nibble. CLK idle low (side 0).
+; Clocks in 1 word (8 nibbles) triggered by dummy word in TX FIFO.
+.wrap_target
+    pull block          side 0
+    set x, 7            side 0
+rx_nibble_loop:
+    out null, 4         side 0
+    in pins, 4          side 1 [1]
+    jmp x-- rx_nibble_loop side 0
+    push noblock        side 0
+.wrap
+
+

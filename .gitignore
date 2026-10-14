@@ -1,0 +1,29 @@
+# Build directories
+build/
+build_*/
+cmake-build-*/
+
+# Temporary and log files
+*.log
+*.tmp
+*.bak
+*~
+*.swp
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# ESP-IDF
+sdkconfig.old
+dependencies.lock
+managed_components/
