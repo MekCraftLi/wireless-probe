@@ -37,10 +37,12 @@ static uint s_offset_tx;
 static uint s_offset_rx;
 static uint16_t s_seq = 0;
 
+#define QSPI_TX_ITEM_SIZE   1100
+
 typedef struct {
     uint8_t channel;
     uint16_t len;
-    uint8_t data[DAP_PACKET_SIZE];
+    uint8_t data[QSPI_TX_ITEM_SIZE];
 } tx_queue_item_t;
 
 /* Configure PIO State Machines for Quad-SPI */
@@ -166,7 +168,7 @@ void qspi_transport_init(void) {
 }
 
 bool qspi_transport_send_frame(ufmf_channel_t ch, const uint8_t *payload, uint16_t len) {
-    if (!s_tx_queue || len > DAP_PACKET_SIZE) return false;
+    if (!s_tx_queue || len > QSPI_TX_ITEM_SIZE) return false;
 
     tx_queue_item_t item;
     item.channel = (uint8_t)ch;

@@ -47,6 +47,7 @@
 #include "DAP.h"
 #include "hardware/structs/usb.h"
 #include "qspi_transport.h"
+#include "sampler_engine.h"
 
 // UART0 for debugprobe debug
 // UART1 for debugprobe to target device
@@ -160,9 +161,11 @@ int main(void) {
     probe_info("Welcome to debugprobe!\n");
 
     qspi_transport_init();
+    sampler_engine_init();
 
     if (THREADED) {
         qspi_transport_start_task();
+        sampler_engine_start_task();
         xTaskCreate(usb_thread, "TUD", configMINIMAL_STACK_SIZE, NULL, TUD_TASK_PRIO, &tud_taskhandle);
 #if (configNUMBER_OF_CORES > 1)
         vTaskCoreAffinitySet(tud_taskhandle, (1 << 0));

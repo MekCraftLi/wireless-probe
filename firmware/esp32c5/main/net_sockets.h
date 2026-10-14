@@ -22,6 +22,7 @@ esp_err_t net_sockets_init(void);
 void net_sockets_set_rx_callback(net_rx_callback_t cb);
 int net_sockets_send(ufmf_channel_t ch, const uint8_t *data, size_t len);
 bool net_sockets_client_connected(ufmf_channel_t ch);
+void net_sockets_set_udp_target(const char *ip_str, uint16_t port);
 
 #ifdef __cplusplus
 }

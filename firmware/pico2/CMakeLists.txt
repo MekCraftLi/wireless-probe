@@ -40,6 +40,7 @@ add_executable(debugprobe
         src/tusb_edpt_handler.c
         src/autobaud.c
         src/qspi_transport.c
+        src/sampler_engine.c
 )
 
 target_sources(debugprobe PRIVATE
