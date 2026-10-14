@@ -288,7 +288,7 @@ static void qspi_worker_task(void *pvParameters) {
 
         if (c5_ready) {
             // Master READ transaction in 4-bit Quad mode
-            size_t read_len = 128; // Read chunk (sufficient for UFMF header + DAP packet)
+            size_t read_len = 544; // Read chunk (sufficient for UFMF header + 512B DAP packet)
             gpio_put(PICO_QSPI_PIN_CS, 0);
             busy_wait_us_32(1);
             qspi_pio_send_cmd_dummy(ESP_SPI_CMD_RDDMA_QUAD);
@@ -307,7 +307,9 @@ static void qspi_worker_task(void *pvParameters) {
             process_incoming_frame(s_qspi_rx_buf, read_len);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1));
+        if (!has_tx && !c5_ready) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
     }
 }
 
