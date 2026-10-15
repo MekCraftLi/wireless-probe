@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-MekProbe Real-time Visualizer & Performance Telemetry Bridge (High-Performance Engine)
-- Solves Windows 15.6ms timer quantum limit via multimedia high-resolution timer
-- Eliminates periodic freezes via decoupled asynchronous SWD background detection
-- Eliminates browser queue overflow & GC pauses via 60 Hz batch streaming & ring buffering
-- Supports 1,500 ~ 5,000+ Sa/s high-throughput telemetry
+MekProbe Real-time Visualizer & Performance Telemetry Bridge
+- Hardware Autonomous Streaming: Uses RTSP control (TCP 3240) + RTP/UDP data push (UDP 3242)
+- Zero Ping-Pong Round-Trip: Pico 2 Core 0 and DMA autonomously read STM32H7 AXI SRAM (0x24000000)
+- 60 FPS Smooth Web Dashboard with HTML5 Canvas Oscilloscope & Real-time Metrics
 """
 
 import argparse
@@ -24,15 +23,22 @@ if sys.platform == "win32":
     try:
         import ctypes
         ctypes.windll.winmm.timeBeginPeriod(1)
-    except Exception as e:
-        print(f"[Timer] Note: Could not set Windows timer resolution: {e}")
+    except Exception:
+        pass
 
 PROBE_IP = "192.168.4.1"
 PROBE_TCP_PORT = 3240
+PROBE_UDP_PORT = 3242
 WEB_PORT = 8080
 TARGET_ADDR = 0x24000000
 TELEMETRY_MAGIC = 0x54454C4D
 TEST_PATTERN = 0xA5A55A5A
+
+RTSP_CMD_SETUP = 0x80
+RTSP_CMD_PLAY = 0x81
+RTSP_CMD_TEARDOWN = 0x82
+RTSP_CMD_GET_STATS = 0x83
+RTP_MAGIC = 0x80
 
 # Global State
 g_clients = []
@@ -72,11 +78,7 @@ def parse_telemetry_packet(raw_bytes):
         return None
 
 def broadcast_sse(data_dict):
-    """
-    Broadcast payload to all connected SSE clients.
-    If a client queue is full, drop the oldest packet instead of dropping the client!
-    This completely eliminates client disconnects and periodic UI freezes.
-    """
+    """Broadcast JSON payload to connected SSE clients without dropping connections."""
     msg = f"data: {json.dumps(data_dict)}\n\n".encode("utf-8")
     with g_clients_lock:
         for q in g_clients:
@@ -84,132 +86,153 @@ def broadcast_sse(data_dict):
                 q.put_nowait(msg)
             except queue.Full:
                 try:
-                    q.get_nowait() # Discard oldest message
+                    q.get_nowait()
                     q.put_nowait(msg)
                 except Exception:
                     pass
 
-class ProbeDetectorThread(threading.Thread):
+class HardwareSamplerBridge:
     """
-    Decoupled background detector.
-    Attempts hardware SWD connection without stalling or pausing the live data stream.
+    Manages TCP 3240 RTSP Control Channel and UDP 3242 Autonomous Data Stream.
+    No request-response round-trips during sampling!
     """
-    def __init__(self, collector):
-        super().__init__(daemon=True)
-        self.collector = collector
+    def __init__(self, probe_ip=PROBE_IP, target_sps=2000):
+        self.probe_ip = probe_ip
+        self.target_sps = target_sps
+        self.tcp_sock = None
+        self.udp_sock = None
+        self.is_active = False
+        self.lock = threading.Lock()
 
-    def run(self):
-        print("[Detector] Asynchronous SWD target detector started.")
-        while g_running:
-            if not self.collector.is_hw_connected and not self.collector.force_sim:
-                self.collector.try_attach_hardware()
-            time.sleep(2.5)
+    def xfer(self, req):
+        self.tcp_sock.sendall(bytes(req))
+        return self.tcp_sock.recv(1024)
+
+    def attach_and_start(self):
+        """Perform SWD connect, CoreSight debug power-up, and start autonomous streaming."""
+        with self.lock:
+            try:
+                # 1. Open TCP Control Plane
+                self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.tcp_sock.settimeout(1.5)
+                self.tcp_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.tcp_sock.connect((self.probe_ip, PROBE_TCP_PORT))
+
+                # 2. Open UDP Data Plane
+                self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+                except Exception:
+                    pass
+                self.udp_sock.bind(("0.0.0.0", PROBE_UDP_PORT))
+                self.udp_sock.settimeout(0.5)
+
+                # Send registration datagram so ESP32-C5 learns local port immediately
+                self.udp_sock.sendto(b"PING", (self.probe_ip, PROBE_UDP_PORT))
+
+                # 3. Standard SWD Reset & Synchronization
+                self.xfer([0x03]) # DAP_Disconnect
+                r = self.xfer([0x02, 0x01]) # DAP_Connect SWD
+                if len(r) < 2 or r[1] != 1:
+                    self.teardown()
+                    return False
+
+                # Set Clock 500 kHz
+                self.xfer([0x11, 0x20, 0xA1, 0x07, 0x00])
+                self.xfer([0x04, 0x00, 0x40, 0x00, 0x00, 0x00])
+
+                # SWD Line Reset
+                self.xfer([0x12, 56] + [0xFF]*7)
+                self.xfer([0x12, 16, 0x9E, 0xE7])
+                self.xfer([0x12, 56] + [0xFF]*7)
+                self.xfer([0x12, 16, 0x00, 0x00])
+
+                # Read DPIDR
+                r = self.xfer([0x05, 0x00, 0x01, 0x02])
+                if len(r) < 7 or r[1] != 1 or (r[2] & 0x07) != 1:
+                    self.teardown()
+                    return False
+
+                dpidr = struct.unpack("<I", r[3:7])[0]
+                print(f"[Bridge] >>> TARGET DETECTED! DPIDR = 0x{dpidr:08X} <<<")
+
+                # Power up CoreSight debug subsystem (DP_CTRL_STAT)
+                self.xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
+
+                # 4. Configure RTSP Autonomous Sampler
+                # Format: [0x80] [mode:1B] [var_count:1B] [burst_words:2B] [rate_hz:4B] [addr:4B]
+                # mode=0 (BLOCK), var_count=1, burst_words=16 (64 bytes), rate_hz=0 (wire speed saturation)
+                setup_pkt = struct.pack("<BBBHII", RTSP_CMD_SETUP, 0, 1, 16, 0, TARGET_ADDR)
+                r = self.xfer(setup_pkt)
+                if len(r) < 2 or r[0] != RTSP_CMD_SETUP or r[1] != 0:
+                    print(f"[Bridge] SETUP rejected: {r.hex()}")
+                    self.teardown()
+                    return False
+
+                # 5. Start Autonomous Stream via PLAY
+                r = self.xfer([RTSP_CMD_PLAY])
+                if len(r) < 2 or r[0] != RTSP_CMD_PLAY or r[1] != 0:
+                    print(f"[Bridge] PLAY rejected: {r.hex()}")
+                    self.teardown()
+                    return False
+
+                print(f"[Bridge] [+] RTSP/RTP Autonomous Hardware Stream ACTIVE! (UDP -> 0.0.0.0:{PROBE_UDP_PORT})")
+                self.is_active = True
+                g_target_status["mode"] = "hardware_swd"
+                g_target_status["dpidr"] = f"0x{dpidr:08X}"
+                g_target_status["target"] = "ARM Cortex-M7 (STM32H723ZGTx Autonomous UDP Stream)"
+                broadcast_sse({"type": "status", **g_target_status})
+                return True
+
+            except Exception as e:
+                self.teardown()
+                return False
+
+    def teardown(self):
+        self.is_active = False
+        if self.tcp_sock:
+            try:
+                self.tcp_sock.sendall(bytes([RTSP_CMD_TEARDOWN]))
+            except Exception:
+                pass
+            try:
+                self.tcp_sock.close()
+            except Exception:
+                pass
+            self.tcp_sock = None
+        if self.udp_sock:
+            try:
+                self.udp_sock.close()
+            except Exception:
+                pass
+            self.udp_sock = None
+
+    def recv_autonomous_packet(self):
+        """Receive an autonomous RTP packet over UDP. Non-blocking/timeout."""
+        if not self.is_active or not self.udp_sock:
+            return None
+        try:
+            data, _ = self.udp_sock.recvfrom(2048)
+            if len(data) >= 76 and data[0] == RTP_MAGIC:
+                # data[0:12] is RTP Header: magic, pt, seq, ts_us, session_id, sample_count
+                # data[12:76] is the 64-byte TelemetryData_t payload read autonomously by RP2350
+                return parse_telemetry_packet(data[12:76])
+        except socket.timeout:
+            return None
+        except Exception:
+            return None
+        return None
 
 class TelemetryCollector(threading.Thread):
     def __init__(self, probe_ip=PROBE_IP, force_sim=False, target_sps=2000):
         super().__init__(daemon=True)
-        self.probe_ip = probe_ip
+        self.bridge = HardwareSamplerBridge(probe_ip=probe_ip, target_sps=target_sps)
         self.force_sim = force_sim
         self.target_sps = target_sps
-        self.sock = None
-        self.is_hw_connected = False
-        self.sock_lock = threading.Lock()
-
-    def xfer(self, s, req):
-        s.sendall(bytes(req))
-        return s.recv(1024)
-
-    def try_attach_hardware(self):
-        """Perform non-blocking SWD handshake in background."""
-        s = None
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.5)
-            s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            s.connect((self.probe_ip, PROBE_TCP_PORT))
-
-            # 1. Reset DAP & connect SWD
-            self.xfer(s, [0x03])
-            r = self.xfer(s, [0x02, 0x01])
-            if len(r) < 2 or r[1] != 1:
-                s.close()
-                return False
-
-            # 2. Clock 500 kHz
-            self.xfer(s, [0x11, 0x20, 0xA1, 0x07, 0x00])
-            self.xfer(s, [0x04, 0x00, 0x40, 0x00, 0x00, 0x00])
-
-            # 3. SWD Line Reset
-            self.xfer(s, [0x12, 56] + [0xFF]*7)
-            self.xfer(s, [0x12, 16, 0x9E, 0xE7])
-            self.xfer(s, [0x12, 56] + [0xFF]*7)
-            self.xfer(s, [0x12, 16, 0x00, 0x00])
-
-            # 4. Read DPIDR
-            r = self.xfer(s, [0x05, 0x00, 0x01, 0x02])
-            if len(r) >= 7 and r[1] == 1 and (r[2] & 0x07) == 1:
-                dpidr = struct.unpack("<I", r[3:7])[0]
-                print(f"[Collector] >>> HARDWARE TARGET DETECTED! DPIDR = 0x{dpidr:08X} <<<")
-
-                # Power up CoreSight debug subsystem
-                self.xfer(s, [0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
-                # Select AP0
-                self.xfer(s, [0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00])
-                # AP0 CSW = 0x23000052 (32-bit word, auto-increment)
-                self.xfer(s, [0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23])
-
-                with self.sock_lock:
-                    if self.sock:
-                        try: self.sock.close()
-                        except: pass
-                    self.sock = s
-                    self.is_hw_connected = True
-                    g_target_status["mode"] = "hardware_swd"
-                    g_target_status["dpidr"] = f"0x{dpidr:08X}"
-                    g_target_status["target"] = "ARM Cortex-M7 (STM32H723ZGTx)"
-                    broadcast_sse({"type": "status", **g_target_status})
-                return True
-            else:
-                s.close()
-                return False
-        except Exception:
-            if s:
-                try: s.close()
-                except: pass
-            return False
-
-    def read_telemetry_pipelined(self):
-        """
-        Pipelined SWD Memory Read:
-        Merges TAR set (DAP_Transfer) + Block Read (DAP_TransferBlock) into a SINGLE TCP request.
-        Cuts round-trip latency by 50% compared to sequential request-response.
-        """
-        try:
-            addr_bytes = list(struct.pack("<I", TARGET_ADDR))
-            # Pipelined command: DAP_Transfer (set TAR) + DAP_TransferBlock (read 16 words)
-            req = bytes([
-                0x05, 0x00, 0x01, 0x05] + addr_bytes + [
-                0x06, 0x00, 0x10, 0x00, 0x07
-            ])
-            with self.sock_lock:
-                if not self.sock:
-                    return None
-                self.sock.sendall(req)
-                # Response 1: 0x05 + count(1) + ack(1) = 3 bytes
-                # Response 2: 0x06 + count_l(1) + count_h(1) + ack(1) + 64 bytes = 68 bytes
-                resp = self.sock.recv(1024)
-
-            if len(resp) >= 71 and resp[0] == 0x05:
-                # resp[3] is start of TransferBlock response
-                block_resp = resp[3:]
-                if block_resp[0] == 0x06 and block_resp[1] == 0x10 and (block_resp[3] & 0x07) == 1:
-                    return block_resp[4:68]
-            return None
-        except Exception:
-            return None
 
     def run(self):
-        print(f"[Collector] High-speed streaming engine running. Target rate: {self.target_sps} Sa/s")
+        print(f"[Collector] Telemetry Engine initialized. Target rate: {self.target_sps} Sa/s")
 
         sim_seq = 0
         sim_pos = 0.0
@@ -221,46 +244,49 @@ class TelemetryCollector(threading.Thread):
         dt = 1.0 / self.target_sps
         FRAME_PERIOD = 0.01667  # 60 FPS frame time (16.67 ms)
         next_frame_time = time.perf_counter()
+        last_detect_time = 0
 
         while g_running:
-            t_frame_start = time.perf_counter()
+            # 1. Background Hardware Target Attachment
+            now = time.perf_counter()
+            if not self.bridge.is_active and not self.force_sim:
+                if now - last_detect_time >= 2.5 or g_force_reconnect.is_set():
+                    last_detect_time = now
+                    g_force_reconnect.clear()
+                    self.bridge.attach_and_start()
+
             batch_samples = []
 
-            # 1. Hardware Mode: Read available packets
-            if self.is_hw_connected:
-                # Read pipelined block
-                raw = self.read_telemetry_pipelined()
-                if raw and len(raw) == 64:
-                    pkt = parse_telemetry_packet(raw)
-                    if pkt and pkt["magic"] == f"0x{TELEMETRY_MAGIC:08X}":
+            # 2. Hardware Autonomous Stream Mode (Zero Ping-Pong!)
+            if self.bridge.is_active:
+                # Drain available UDP datagrams pushed by probe
+                drain_start = time.perf_counter()
+                while time.perf_counter() - drain_start < 0.014: # Collect up to frame deadline
+                    pkt = self.bridge.recv_autonomous_packet()
+                    if pkt:
                         batch_samples.append(pkt)
-                else:
-                    # Connection dropped
-                    print("[Collector] Hardware SWD read failed. Reverting to simulation...")
-                    with self.sock_lock:
-                        self.is_hw_connected = False
-                        if self.sock:
-                            try: self.sock.close()
-                            except: pass
-                            self.sock = None
+                    else:
+                        break
+
+                if not batch_samples and (now - last_detect_time > 5.0):
+                    # Check if stream died
+                    print("[Collector] No UDP datagrams received. Reconnecting stream...")
+                    self.bridge.teardown()
                     g_target_status["mode"] = "simulation"
                     broadcast_sse({"type": "status", **g_target_status})
 
-            # 2. Simulation Mode: Frame-paced batch generation
-            if not self.is_hw_connected:
-                # Target number of samples per 16.67ms frame
+            # 3. Fallback Simulation Mode
+            if not self.bridge.is_active:
                 samples_in_frame = max(1, int(self.target_sps * FRAME_PERIOD))
                 for _ in range(samples_in_frame):
                     sim_seq += 1
                     t = sim_seq * dt
 
-                    # Multi-frequency waveforms
                     sine = 100.0 * math.sin(2.0 * math.pi * 5.0 * t)
                     tri_phase = (t * 2.0) % 1.0
                     tri = (tri_phase * 200.0) if tri_phase < 0.5 else ((1.0 - tri_phase) * 200.0)
                     sq = 60.0 if (t % 1.0) < 0.5 else 0.0
 
-                    # PID Simulation
                     pid_sp = 85.0 if (t % 4.0) < 2.0 else 25.0
                     err = pid_sp - sim_pos
                     sim_integral += err * dt
@@ -270,12 +296,10 @@ class TelemetryCollector(threading.Thread):
                     pid_out = 3.2 * err + 1.5 * sim_integral + 0.08 * deriv
                     pid_out = max(-100.0, min(100.0, pid_out))
 
-                    # 2nd-order dynamic plant
                     accel = (pid_out * 8.0 - 6.0 * sim_vel - 10.0 * sim_pos) / 1.5
                     sim_vel += accel * dt
                     sim_pos += sim_vel * dt
 
-                    # Noise
                     lfsr ^= (lfsr << 13) & 0xFFFFFFFF
                     lfsr ^= (lfsr >> 17) & 0xFFFFFFFF
                     lfsr ^= (lfsr << 5) & 0xFFFFFFFF
@@ -297,14 +321,14 @@ class TelemetryCollector(threading.Thread):
                         "pattern": f"0x{TEST_PATTERN:08X}"
                     })
 
-            # Broadcast batch at 60 FPS
+            # 4. Broadcast Batch at 60 FPS
             if batch_samples:
                 broadcast_sse({
                     "type": "batch",
                     "samples": batch_samples
                 })
 
-            # 60 FPS Frame Pacing
+            # 5. Precise 60 FPS Frame Pacing
             next_frame_time += FRAME_PERIOD
             now = time.perf_counter()
             sleep_time = next_frame_time - now
@@ -337,7 +361,6 @@ class WebVisualizerHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
-            # Capacity of 120 batches (~2 full seconds of buffer)
             client_queue = queue.Queue(maxsize=120)
             with g_clients_lock:
                 g_clients.append(client_queue)
@@ -403,18 +426,15 @@ def main():
     collector = TelemetryCollector(probe_ip=args.probe_ip, force_sim=args.sim, target_sps=args.sps)
     collector.start()
 
-    detector = ProbeDetectorThread(collector)
-    detector.start()
-
     server = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), WebVisualizerHandler)
     print("\n" + "=" * 65)
-    print(f"  MekProbe High-Rate (2000+ Sa/s) Telemetry Visualizer Engine")
+    print(f"  MekProbe Autonomous Hardware Streaming (Zero Ping-Pong)")
     print("=" * 65)
-    print(f"  [+] Web Dashboard UI:  http://localhost:{args.port}")
-    print(f"  [+] Target Sampling:   {args.sps} Sa/s (60 Hz Smooth Batching)")
-    print(f"  [+] Probe Endpoint:    {args.probe_ip}:{PROBE_TCP_PORT}")
-    print(f"  [+] Target Address:    0x{TARGET_ADDR:08X} (AXI SRAM RAM_D1)")
-    print(f"  [+] Zero-Stutter Mode: Asynchronous Background Target Attachment")
+    print(f"  [+] Web Dashboard UI:     http://localhost:{args.port}")
+    print(f"  [+] Control Channel (TCP): {args.probe_ip}:{PROBE_TCP_PORT} (RTSP)")
+    print(f"  [+] Data Channel (UDP):    0.0.0.0:{PROBE_UDP_PORT} (RTP Push)")
+    print(f"  [+] Target Memory Addr:   0x{TARGET_ADDR:08X} (AXI SRAM RAM_D1)")
+    print(f"  [+] Autonomous Rate:      {args.sps} Sa/s (Probe-Driven Wire Speed)")
     print("=" * 65 + "\n")
 
     try:
@@ -423,6 +443,7 @@ def main():
         print("\nShutting down server...")
         global g_running
         g_running = False
+        collector.bridge.teardown()
         server.server_close()
 
 if __name__ == "__main__":
