@@ -136,16 +136,16 @@ static void sampler_worker_task(void *pvParameters) {
     uint32_t last_calc_time = to_ms_since_boot(get_absolute_time());
     uint32_t last_sample_cnt = 0;
     static uint32_t diag_cnt = 0;
+    uint64_t next_sample_time_us = time_us_64();
 
     sampler_diag("[Sampler] Worker Task started!\r\n");
 
     while (1) {
         if (!s_running) {
             vTaskDelay(pdMS_TO_TICKS(20));
+            next_sample_time_us = time_us_64();
             continue;
         }
-
-        uint64_t t_start = time_us_64();
 
         if (s_mode == SAMPLER_MODE_BLOCK) {
             sampler_read_block_burst();
@@ -172,12 +172,17 @@ static void sampler_worker_task(void *pvParameters) {
             last_calc_time = now_ms;
         }
 
-        // Pacing: if sample_rate_hz == 0, wire speed saturation (0 delay)!
+        // Phase-Locked Absolute Pacing: 0 cumulative drift
+        // If s_sample_rate_hz == 0, wire speed saturation (0 delay)!
         if (s_sample_rate_hz > 0) {
             uint32_t target_period_us = 1000000 / s_sample_rate_hz;
-            uint64_t elapsed_us = time_us_64() - t_start;
-            if (elapsed_us < target_period_us) {
-                busy_wait_us_32((uint32_t)(target_period_us - elapsed_us));
+            next_sample_time_us += target_period_us;
+            uint64_t now_us = time_us_64();
+            if (now_us < next_sample_time_us) {
+                busy_wait_us_32((uint32_t)(next_sample_time_us - now_us));
+            } else if (now_us - next_sample_time_us > target_period_us * 5) {
+                // If fell behind by more than 5 frames (e.g. SWD bus error recovery), re-lock phase
+                next_sample_time_us = now_us;
             }
         }
     }
