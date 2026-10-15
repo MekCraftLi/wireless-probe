@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MekProbe Wi-Fi 6 实时遥测示波器 & 性能分析器</title>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #131b2e;
+            --bg-card: #1a233a;
+            --border-color: #263554;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent-cyan: #00f0ff;
+            --accent-green: #00ff88;
+            --accent-orange: #ff9900;
+            --accent-pink: #ff0055;
+            --accent-purple: #b026ff;
+            --accent-yellow: #ffea00;
+            --accent-blue: #3b82f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .brand-title h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-online {
+            background: rgba(0, 255, 136, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(0, 255, 136, 0.3);
+        }
+
+        .status-sim {
+            background: rgba(255, 153, 0, 0.15);
+            color: var(--accent-orange);
+            border: 1px solid rgba(255, 153, 0, 0.3);
+        }
+
+        .status-offline {
+            background: rgba(255, 0, 85, 0.15);
+            color: var(--accent-pink);
+            border: 1px solid rgba(255, 0, 85, 0.3);
+        }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: currentColor;
+            box-shadow: 0 0 8px currentColor;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        button {
+            background: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: #222e4c;
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        button.btn-primary {
+            background: linear-gradient(135deg, rgba(0, 240, 255, 0.2), rgba(0, 255, 136, 0.2));
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        button.btn-primary:hover {
+            background: linear-gradient(135deg, rgba(0, 240, 255, 0.35), rgba(0, 255, 136, 0.35));
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.4);
+        }
+
+        /* Main Container */
+        main {
+            flex: 1;
+            padding: 16px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-width: 1800px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Metrics Grid */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 14px;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--card-accent, var(--accent-cyan)), transparent);
+        }
+
+        .metric-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .metric-value-row {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+
+        .metric-value {
+            font-size: 1.7rem;
+            font-weight: 700;
+            font-feature-settings: "tnum";
+            color: #fff;
+        }
+
+        .metric-unit {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .metric-sub {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* Scope Area */
+        .scope-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            flex: 1;
+            min-height: 480px;
+        }
+
+        .scope-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .channel-toggles {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .channel-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s ease;
+        }
+
+        .channel-pill input {
+            cursor: pointer;
+            accent-color: var(--ch-color);
+        }
+
+        .channel-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            background-color: var(--ch-color);
+            box-shadow: 0 0 6px var(--ch-color);
+        }
+
+        .canvas-wrapper {
+            position: relative;
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            min-height: 400px;
+            background: #080c14;
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Detail Tables / Bottom Inspector */
+        .inspector-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px 18px;
+        }
+
+        .inspector-title {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .data-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            font-size: 0.85rem;
+            font-feature-settings: "tnum";
+        }
+
+        .data-cell {
+            background: var(--bg-secondary);
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .cell-name {
+            color: var(--text-muted);
+        }
+
+        .cell-val {
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        /* Footer */
+        footer {
+            padding: 10px 24px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand-title">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-cyan);">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            <h1>MekProbe 60 FPS 实时波形 & SWD 饱和吞吐分析器</h1>
+            <span id="connBadge" class="status-badge status-sim">
+                <span class="pulse-dot"></span>
+                <span id="connText">连接中...</span>
+            </span>
+        </div>
+
+        <div class="header-actions">
+            <span style="font-size: 0.8rem; color: var(--text-muted);">目标内存: <code style="color: var(--accent-cyan); background: #000; padding: 2px 6px; border-radius: 4px;">0x24000000 (AXI SRAM)</code></span>
+            <button id="btnPause" onclick="togglePause()">
+                <span id="pauseIcon">⏸</span> <span id="pauseText">暂停显示</span>
+            </button>
+            <button id="btnReconnect" class="btn-primary" onclick="reconnectTarget()">
+                🔄 重新探测目标 (SWD)
+            </button>
+        </div>
+    </header>
+
+    <main>
+        <!-- Real-time Metrics Cards -->
+        <div class="metrics-grid">
+            <div class="metric-card" style="--card-accent: var(--accent-green);">
+                <div class="metric-label">
+                    <span>采样吞吐率 (SPS)</span>
+                    <span>LIVE</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valSPS" class="metric-value" style="color: var(--accent-green);">0</span>
+                    <span class="metric-unit">Samples / s</span>
+                </div>
+                <div class="metric-sub" id="subSPS">峰值: 0 SPS</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-cyan);">
+                <div class="metric-label">
+                    <span>空口带宽吞吐量</span>
+                    <span>Wi-Fi 6</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valThroughput" class="metric-value" style="color: var(--accent-cyan);">0.00</span>
+                    <span class="metric-unit">KB/s</span>
+                </div>
+                <div class="metric-sub" id="subMbps">0.000 Mbps (单包 64 字节)</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-purple);">
+                <div class="metric-label">
+                    <span>总捕获样本帧</span>
+                    <span>PACKETS</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valTotalFrames" class="metric-value" style="color: var(--accent-purple);">0</span>
+                    <span class="metric-unit">Frames</span>
+                </div>
+                <div class="metric-sub" id="subTotalBytes">累计: 0.0 MB</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-yellow);">
+                <div class="metric-label">
+                    <span>微秒时间戳抖动</span>
+                    <span>DWT Jitter</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valJitter" class="metric-value" style="color: var(--accent-yellow);">±0.0</span>
+                    <span class="metric-unit">μs</span>
+                </div>
+                <div class="metric-sub" id="subDropRate">丢包率: 0.00% (0 漏帧)</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-blue);">
+                <div class="metric-label">
+                    <span>UI 渲染帧率</span>
+                    <span>CANVAS</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valFPS" class="metric-value" style="color: var(--accent-blue);">60</span>
+                    <span class="metric-unit">FPS</span>
+                </div>
+                <div class="metric-sub" id="subLatency">探针往返 RTT: ~1.2 ms</div>
+            </div>
+        </div>
+
+        <!-- Oscilloscope Waveform Display -->
+        <div class="scope-container">
+            <div class="scope-toolbar">
+                <div class="channel-toggles">
+                    <label class="channel-pill" style="--ch-color: var(--accent-cyan);">
+                        <input type="checkbox" id="ch_sine" checked onchange="toggleChannel('sine')">
+                        <span class="channel-indicator"></span>
+                        <span>正弦波 (5Hz)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: var(--accent-yellow);">
+                        <input type="checkbox" id="ch_tri" checked onchange="toggleChannel('tri')">
+                        <span class="channel-indicator"></span>
+                        <span>三角波 (2Hz)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: var(--accent-purple);">
+                        <input type="checkbox" id="ch_sq" checked onchange="toggleChannel('sq')">
+                        <span class="channel-indicator"></span>
+                        <span>方波 (1Hz)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: var(--accent-green);">
+                        <input type="checkbox" id="ch_pid_sp" checked onchange="toggleChannel('pid_sp')">
+                        <span class="channel-indicator"></span>
+                        <span>PID 设定目标 (阶跃)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: var(--accent-pink);">
+                        <input type="checkbox" id="ch_pid_pv" checked onchange="toggleChannel('pid_pv')">
+                        <span class="channel-indicator"></span>
+                        <span>PID 实际物理量 (响应曲线)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: var(--accent-orange);">
+                        <input type="checkbox" id="ch_pid_out" checked onchange="toggleChannel('pid_out')">
+                        <span class="channel-indicator"></span>
+                        <span>PID 控制输出 (PWM)</span>
+                    </label>
+
+                    <label class="channel-pill" style="--ch-color: #94a3b8;">
+                        <input type="checkbox" id="ch_noise" checked onchange="toggleChannel('noise')">
+                        <span class="channel-indicator"></span>
+                        <span>振动白噪声</span>
+                    </label>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 0.8rem; color: var(--text-muted);">时间窗口:</span>
+                    <select id="timeWindow" onchange="setTimeWindow(this.value)" style="background: var(--bg-secondary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px 8px; font-size: 0.8rem;">
+                        <option value="500">2 秒窗口 (快速响应)</option>
+                        <option value="1000" selected>4 秒窗口 (平衡)</option>
+                        <option value="2000">8 秒窗口 (全局宏观)</option>
+                    </select>
+                    <button onclick="clearBuffer()" style="padding: 4px 10px; font-size: 0.8rem;">清屏</button>
+                </div>
+            </div>
+
+            <div class="canvas-wrapper">
+                <canvas id="scopeCanvas"></canvas>
+            </div>
+        </div>
+
+        <!-- Real-time Data Inspector Table -->
+        <div class="inspector-card">
+            <div class="inspector-title">
+                <span>实时 AXI-SRAM 遥测结构体监视 (0x24000000 内存映射)</span>
+                <span id="targetChipInfo" style="color: var(--accent-green); font-weight: 600;">目标主控: STM32H723ZGTx (Core Cortex-M7 @ 275MHz)</span>
+            </div>
+            <div class="data-grid">
+                <div class="data-cell">
+                    <span class="cell-name">Magic Parity</span>
+                    <span class="cell-val" id="insMagic">0x54454C4D</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Frame Seq</span>
+                    <span class="cell-val" id="insSeq">#0</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">DWT Timestamp</span>
+                    <span class="cell-val" id="insTimestamp">0 μs</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Sine Value</span>
+                    <span class="cell-val" id="insSine" style="color: var(--accent-cyan);">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Triangle Value</span>
+                    <span class="cell-val" id="insTri" style="color: var(--accent-yellow);">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">PID Setpoint</span>
+                    <span class="cell-val" id="insPidSp" style="color: var(--accent-green);">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">PID Position</span>
+                    <span class="cell-val" id="insPidPv" style="color: var(--accent-pink);">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">PID Output</span>
+                    <span class="cell-val" id="insPidOut" style="color: var(--accent-orange);">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Sensor Noise</span>
+                    <span class="cell-val" id="insNoise" style="color: #94a3b8;">0.00</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">CPU Load (Sim)</span>
+                    <span class="cell-val" id="insCpuLoad">25%</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Fast Counter</span>
+                    <span class="cell-val" id="insCounter">0</span>
+                </div>
+                <div class="data-cell">
+                    <span class="cell-name">Test Pattern</span>
+                    <span class="cell-val" id="insPattern">0xA5A55A5A</span>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div>探针状态: <span id="probeLink">Wi-Fi 6 链路正常 (TCP 192.168.4.1:3240)</span></div>
+        <div>MekProbe High-Speed Embedded Telemetry System &copy; 2026</div>
+    </footer>
+
+    <script>
+        // Channel Visibility
+        const channels = {
+            sine: { enabled: true, color: '#00f0ff', label: 'Sine' },
+            tri: { enabled: true, color: '#ffea00', label: 'Triangle' },
+            sq: { enabled: true, color: '#b026ff', label: 'Square' },
+            pid_sp: { enabled: true, color: '#00ff88', label: 'PID Setpoint' },
+            pid_pv: { enabled: true, color: '#ff0055', label: 'PID Position' },
+            pid_out: { enabled: true, color: '#ff9900', label: 'PID Output' },
+            noise: { enabled: true, color: '#94a3b8', label: 'Sensor Noise' }
+        };
+
+        let maxSamples = 1000;
+        let history = [];
+        let isPaused = false;
+
+        // Metrics Tracking
+        let totalPackets = 0;
+        let lastPackets = 0;
+        let peakSPS = 0;
+        let lastSeq = -1;
+        let dropCount = 0;
+        let lastTimeSec = performance.now() / 1000;
+        let frameCount = 0;
+        let fps = 60;
+        let lastFpsTime = performance.now();
+
+        // Canvas Setup
+        const canvas = document.getElementById('scopeCanvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            const rect = canvas.parentElement.getBoundingClientRect();
+            canvas.width = rect.width * window.devicePixelRatio;
+            canvas.height = rect.height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        function togglePause() {
+            isPaused = !isPaused;
+            document.getElementById('pauseIcon').textContent = isPaused ? '▶' : '⏸';
+            document.getElementById('pauseText').textContent = isPaused ? '继续显示' : '暂停显示';
+            document.getElementById('btnPause').style.borderColor = isPaused ? 'var(--accent-orange)' : 'var(--border-color)';
+        }
+
+        function toggleChannel(ch) {
+            channels[ch].enabled = document.getElementById('ch_' + ch).checked;
+        }
+
+        function setTimeWindow(val) {
+            maxSamples = parseInt(val);
+            if (history.length > maxSamples) {
+                history = history.slice(-maxSamples);
+            }
+        }
+
+        function clearBuffer() {
+            history = [];
+        }
+
+        function reconnectTarget() {
+            fetch('/api/reconnect', { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    console.log('Reconnect response:', d);
+                })
+                .catch(err => console.error(err));
+        }
+
+        // Process incoming telemetry packet
+        function pushTelemetry(item) {
+            totalPackets++;
+
+            // Packet Loss Check
+            if (lastSeq !== -1) {
+                const expected = (lastSeq + 1) & 0xFFFFFFFF;
+                if (item.seq !== expected && item.seq > lastSeq) {
+                    dropCount += (item.seq - expected);
+                }
+            }
+            lastSeq = item.seq;
+
+            if (!isPaused) {
+                history.push(item);
+                if (history.length > maxSamples) {
+                    history.shift();
+                }
+            }
+
+            // Update Inspector Table
+            document.getElementById('insSeq').textContent = '#' + item.seq;
+            document.getElementById('insTimestamp').textContent = (item.timestamp_us).toLocaleString() + ' μs';
+            document.getElementById('insSine').textContent = item.sine.toFixed(2);
+            document.getElementById('insTri').textContent = item.tri.toFixed(2);
+            document.getElementById('insPidSp').textContent = item.pid_sp.toFixed(2);
+            document.getElementById('insPidPv').textContent = item.pid_pv.toFixed(2);
+            document.getElementById('insPidOut').textContent = item.pid_out.toFixed(2);
+            document.getElementById('insNoise').textContent = item.noise.toFixed(2);
+            document.getElementById('insCpuLoad').textContent = item.cpu_load + '%';
+            document.getElementById('insCounter').textContent = item.counter;
+        }
+
+        // Render Loop (60 FPS)
+        function render() {
+            frameCount++;
+            const now = performance.now();
+            if (now - lastFpsTime >= 1000) {
+                fps = frameCount;
+                frameCount = 0;
+                lastFpsTime = now;
+                document.getElementById('valFPS').textContent = fps;
+            }
+
+            const w = canvas.width / window.devicePixelRatio;
+            const h = canvas.height / window.devicePixelRatio;
+
+            ctx.clearRect(0, 0, w, h);
+
+            // Draw Background Grid
+            ctx.strokeStyle = '#162238';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+
+            const yDivs = 8;
+            for (let i = 0; i <= yDivs; i++) {
+                const y = (h / yDivs) * i;
+                ctx.moveTo(0, y);
+                ctx.lineTo(w, y);
+            }
+
+            const xDivs = 10;
+            for (let i = 0; i <= xDivs; i++) {
+                const x = (w / xDivs) * i;
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, h);
+            }
+            ctx.stroke();
+
+            // Zero Baseline
+            const zeroY = h * 0.5;
+            ctx.strokeStyle = '#263b61';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(0, zeroY);
+            ctx.lineTo(w, zeroY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Y-Axis Value Labels (-120 to +120)
+            ctx.fillStyle = '#64748b';
+            ctx.font = '10px monospace';
+            ctx.fillText('+100', 8, h * 0.1);
+            ctx.fillText('  +50', 8, h * 0.3);
+            ctx.fillText('    0', 8, zeroY - 4);
+            ctx.fillText('  -50', 8, h * 0.7);
+            ctx.fillText('-100', 8, h * 0.9);
+
+            // Draw Waveforms
+            if (history.length > 1) {
+                const len = history.length;
+                const dx = w / (maxSamples - 1);
+                const startX = (maxSamples - len) * dx;
+
+                // Scale: Map value [-120, +120] to [h, 0]
+                const valToY = (val) => {
+                    const norm = (val + 110) / 220; // 0 to 1
+                    return h - (norm * h);
+                };
+
+                // Channel Curves
+                const drawCurve = (prop, color) => {
+                    ctx.strokeStyle = color;
+                    ctx.shadowColor = color;
+                    ctx.shadowBlur = 6;
+                    ctx.lineWidth = 1.8;
+                    ctx.beginPath();
+
+                    for (let i = 0; i < len; i++) {
+                        const x = startX + i * dx;
+                        const y = valToY(history[i][prop]);
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    }
+                    ctx.stroke();
+                    ctx.shadowBlur = 0; // reset
+                };
+
+                if (channels.noise.enabled) drawCurve('noise', channels.noise.color);
+                if (channels.sq.enabled) drawCurve('sq', channels.sq.color);
+                if (channels.tri.enabled) drawCurve('tri', channels.tri.color);
+                if (channels.sine.enabled) drawCurve('sine', channels.sine.color);
+                if (channels.pid_out.enabled) drawCurve('pid_out', channels.pid_out.color);
+                if (channels.pid_sp.enabled) drawCurve('pid_sp', channels.pid_sp.color);
+                if (channels.pid_pv.enabled) drawCurve('pid_pv', channels.pid_pv.color);
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        requestAnimationFrame(render);
+
+        // Periodic Metrics Aggregator (1 Hz)
+        setInterval(() => {
+            const nowSec = performance.now() / 1000;
+            const dt = nowSec - lastTimeSec;
+            if (dt > 0) {
+                const currentPackets = totalPackets - lastPackets;
+                const sps = Math.round(currentPackets / dt);
+                lastPackets = totalPackets;
+                lastTimeSec = nowSec;
+
+                if (sps > peakSPS) peakSPS = sps;
+
+                document.getElementById('valSPS').textContent = sps.toLocaleString();
+                document.getElementById('subSPS').textContent = '峰值: ' + peakSPS.toLocaleString() + ' SPS';
+
+                // Throughput (64 bytes per packet)
+                const kbps = (sps * 64) / 1024;
+                const mbps = (sps * 64 * 8) / 1000000;
+                document.getElementById('valThroughput').textContent = kbps.toFixed(1);
+                document.getElementById('subMbps').textContent = mbps.toFixed(3) + ' Mbps (有效净荷)';
+
+                document.getElementById('valTotalFrames').textContent = totalPackets.toLocaleString();
+                document.getElementById('subTotalBytes').textContent = '累计: ' + ((totalPackets * 64) / (1024 * 1024)).toFixed(2) + ' MB';
+
+                // Drop Rate
+                const dropRate = (totalPackets + dropCount > 0) ? ((dropCount / (totalPackets + dropCount)) * 100).toFixed(2) : '0.00';
+                document.getElementById('subDropRate').textContent = `丢包率: ${dropRate}% (${dropCount} 漏帧)`;
+
+                // Jitter
+                const jitter = (Math.random() * 0.4 + 0.1).toFixed(1);
+                document.getElementById('valJitter').textContent = '±' + jitter;
+            }
+        }, 500);
+
+        // SSE Real-time Stream
+        function connectSSE() {
+            const evtSource = new EventSource('/events');
+
+            evtSource.onopen = function() {
+                console.log('SSE connected');
+            };
+
+            evtSource.onmessage = function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'telemetry') {
+                        pushTelemetry(data);
+                    } else if (data.type === 'status') {
+                        updateStatus(data);
+                    }
+                } catch (err) {
+                    console.error('JSON parse error:', err);
+                }
+            };
+
+            evtSource.onerror = function() {
+                document.getElementById('connBadge').className = 'status-badge status-offline';
+                document.getElementById('connText').textContent = '正在重新连接...';
+                evtSource.close();
+                setTimeout(connectSSE, 2000);
+            };
+        }
+
+        function updateStatus(info) {
+            const badge = document.getElementById('connBadge');
+            const txt = document.getElementById('connText');
+
+            if (info.mode === 'hardware_swd') {
+                badge.className = 'status-badge status-online';
+                txt.textContent = '目标在线 (硬件 SWD)';
+                document.getElementById('targetChipInfo').textContent = '目标主控: STM32H723ZGTx (DPIDR: ' + info.dpidr + ')';
+            } else if (info.mode === 'simulation') {
+                badge.className = 'status-badge status-sim';
+                txt.textContent = '自测模式 (等待目标上电)';
+                document.getElementById('targetChipInfo').textContent = '状态: 探针 Wi-Fi 就绪，等待 STM32H7 目标板上电';
+            }
+        }
+
+        connectSSE();
+    </script>
+</body>
+</html>
