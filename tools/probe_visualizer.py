@@ -50,41 +50,78 @@ SWD_CYCLES_PER_WORD = 46 # ARM CoreSight SWD block autoincrement: 8 req + 3 ack 
 g_clients = []
 g_clients_lock = threading.Lock()
 g_swd_clock_hz = 2000000  # Default 2.0 MHz (43.5 kSa/s)
+g_sampling_mode = "custom"  # "custom" (Mode 1: configurable rate) or "max" (Mode 2: wire speed)
+g_custom_rate_hz = 2000     # Default 2,000 Hz frame rate in custom mode (matching STM32 2kHz)
+g_collector = None
+
 g_target_status = {
     "mode": "simulation",
     "dpidr": "None",
     "target": "Awaiting STM32H7 Connection",
     "swd_clock_hz": g_swd_clock_hz,
     "swd_clock_str": "2.0 MHz",
+    "sampling_mode": g_sampling_mode,
+    "custom_rate_hz": g_custom_rate_hz,
+    "probe_rate_param": g_custom_rate_hz,
+    "active_fps": g_custom_rate_hz,
+    "active_sps": g_custom_rate_hz * WORDS_PER_FRAME,
     "theoretical_max_sps": g_swd_clock_hz // SWD_CYCLES_PER_WORD,
     "theoretical_max_fps": (g_swd_clock_hz // SWD_CYCLES_PER_WORD) // WORDS_PER_FRAME,
     "theoretical_payload_kbps": round((g_swd_clock_hz * 4 / SWD_CYCLES_PER_WORD) / 1024, 1),
+    "active_payload_kbps": round((g_custom_rate_hz * BYTES_PER_FRAME) / 1024, 1),
     "theoretical_wire_mbps": round(g_swd_clock_hz / 1000000.0, 2),
-    "bus_utilization_pct": 98.4
+    "bus_utilization_pct": 73.6
 }
 g_force_reconnect = threading.Event()
 g_running = True
 
-def update_swd_specs(clock_hz):
-    global g_swd_clock_hz
-    g_swd_clock_hz = clock_hz
-    if clock_hz >= 1000000:
-        str_val = f"{clock_hz/1000000:.1f} MHz" if clock_hz % 1000000 == 0 else f"{clock_hz/1000000:.2f} MHz"
+def update_swd_specs(clock_hz=None, mode=None, custom_rate_hz=None):
+    global g_swd_clock_hz, g_sampling_mode, g_custom_rate_hz
+    if clock_hz is not None:
+        g_swd_clock_hz = clock_hz
+    if mode is not None and mode in ["custom", "max"]:
+        g_sampling_mode = mode
+    if custom_rate_hz is not None and custom_rate_hz > 0:
+        g_custom_rate_hz = int(custom_rate_hz)
+
+    clock = g_swd_clock_hz
+    if clock >= 1000000:
+        str_val = f"{clock/1000000:.1f} MHz" if clock % 1000000 == 0 else f"{clock/1000000:.2f} MHz"
     else:
-        str_val = f"{clock_hz//1000} kHz"
+        str_val = f"{clock//1000} kHz"
 
-    max_sps = clock_hz // SWD_CYCLES_PER_WORD
+    max_sps = clock // SWD_CYCLES_PER_WORD
     max_fps = max_sps // WORDS_PER_FRAME
-    kbps = (clock_hz * 4 / SWD_CYCLES_PER_WORD) / 1024.0
-    mbps = clock_hz / 1000000.0
+    max_payload_kbps = (clock * 4 / SWD_CYCLES_PER_WORD) / 1024.0
+    wire_mbps = clock / 1000000.0
 
-    g_target_status["swd_clock_hz"] = clock_hz
+    if g_sampling_mode == "max":
+        active_fps = max_fps
+        active_sps = max_sps
+        active_payload_kbps = round(max_payload_kbps, 1)
+        bus_util_pct = 98.4
+        probe_rate_param = 0  # 0 indicates wire speed saturation to probe firmware
+    else:
+        active_fps = min(g_custom_rate_hz, max_fps)
+        active_sps = active_fps * WORDS_PER_FRAME
+        active_payload_kbps = round((active_fps * BYTES_PER_FRAME) / 1024.0, 1)
+        needed_cycles = active_fps * WORDS_PER_FRAME * SWD_CYCLES_PER_WORD
+        bus_util_pct = min(100.0, round((needed_cycles / clock) * 100.0, 1))
+        probe_rate_param = g_custom_rate_hz
+
+    g_target_status["swd_clock_hz"] = clock
     g_target_status["swd_clock_str"] = str_val
+    g_target_status["sampling_mode"] = g_sampling_mode
+    g_target_status["custom_rate_hz"] = g_custom_rate_hz
+    g_target_status["probe_rate_param"] = probe_rate_param
+    g_target_status["active_fps"] = active_fps
+    g_target_status["active_sps"] = active_sps
     g_target_status["theoretical_max_sps"] = max_sps
     g_target_status["theoretical_max_fps"] = max_fps
-    g_target_status["theoretical_payload_kbps"] = round(kbps, 1)
-    g_target_status["theoretical_wire_mbps"] = round(mbps, 2)
-    g_target_status["bus_utilization_pct"] = 98.4
+    g_target_status["theoretical_payload_kbps"] = round(max_payload_kbps, 1)
+    g_target_status["active_payload_kbps"] = active_payload_kbps
+    g_target_status["theoretical_wire_mbps"] = round(wire_mbps, 2)
+    g_target_status["bus_utilization_pct"] = bus_util_pct
 
 def parse_telemetry_packet(raw_bytes):
     """Parse 64-byte TelemetryData_t structure."""
@@ -140,7 +177,7 @@ class HardwareSamplerBridge:
         self.tcp_sock.sendall(bytes(req))
         return self.tcp_sock.recv(1024)
 
-    def attach_and_start(self, clock_hz):
+    def attach_and_start(self, clock_hz, rate_param=0):
         """Perform SWD connect, set clock, CoreSight debug power-up, and start autonomous streaming."""
         with self.lock:
             try:
@@ -194,8 +231,8 @@ class HardwareSamplerBridge:
                 self.xfer([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50])
 
                 # 4. Configure RTSP Autonomous Sampler
-                # mode=0 (BLOCK), var_count=1, burst_words=16 (64 bytes), rate_hz=0 (Wire Speed Saturation!)
-                setup_pkt = struct.pack("<BBBHII", RTSP_CMD_SETUP, 0, 1, 16, 0, TARGET_ADDR)
+                # mode=0 (BLOCK), var_count=1, burst_words=16 (64 bytes), rate_hz=rate_param (0=Wire Speed)
+                setup_pkt = struct.pack("<BBBHII", RTSP_CMD_SETUP, 0, 1, 16, rate_param, TARGET_ADDR)
                 r = self.xfer(setup_pkt)
                 if len(r) < 2 or r[0] != RTSP_CMD_SETUP or r[1] != 0:
                     print(f"[Bridge] SETUP rejected: {r.hex()}")
@@ -209,7 +246,7 @@ class HardwareSamplerBridge:
                     self.teardown()
                     return False
 
-                print(f"[Bridge] [+] RTSP/RTP Autonomous Hardware Stream ACTIVE! (UDP -> 0.0.0.0:{PROBE_UDP_PORT})")
+                print(f"[Bridge] [+] RTSP/RTP Autonomous Hardware Stream ACTIVE! (UDP -> 0.0.0.0:{PROBE_UDP_PORT}, Rate={rate_param}Hz)")
                 self.is_active = True
                 g_target_status["mode"] = "hardware_swd"
                 g_target_status["dpidr"] = f"0x{dpidr:08X}"
@@ -219,6 +256,38 @@ class HardwareSamplerBridge:
 
             except Exception:
                 self.teardown()
+                return False
+
+    def reconfigure_sampler(self, rate_param):
+        """Dynamically update autonomous sampler rate without dropping SWD connection."""
+        with self.lock:
+            if not self.is_active or not self.tcp_sock:
+                return False
+            try:
+                # 1. Stop current stream
+                self.tcp_sock.sendall(bytes([RTSP_CMD_TEARDOWN]))
+                time.sleep(0.005)
+                try:
+                    self.tcp_sock.recv(16)
+                except Exception:
+                    pass
+                # 2. Re-setup with new rate parameter
+                setup_pkt = struct.pack("<BBBHII", RTSP_CMD_SETUP, 0, 1, 16, rate_param, TARGET_ADDR)
+                self.tcp_sock.sendall(setup_pkt)
+                r = self.tcp_sock.recv(64)
+                if len(r) < 2 or r[0] != RTSP_CMD_SETUP or r[1] != 0:
+                    print(f"[Bridge] Reconfigure SETUP rejected: {r.hex()}")
+                    return False
+                # 3. Resume streaming
+                self.tcp_sock.sendall(bytes([RTSP_CMD_PLAY]))
+                r = self.tcp_sock.recv(16)
+                if len(r) < 2 or r[0] != RTSP_CMD_PLAY or r[1] != 0:
+                    print(f"[Bridge] Reconfigure PLAY rejected: {r.hex()}")
+                    return False
+                print(f"[Bridge] Autonomous sampler reconfigured: rate_param={rate_param} Hz")
+                return True
+            except Exception as e:
+                print(f"[Bridge] Reconfigure error: {e}")
                 return False
 
     def teardown(self):
@@ -286,7 +355,7 @@ class TelemetryCollector(threading.Thread):
             if not self.bridge.is_active and not self.force_sim:
                 if now - last_detect_time >= 2.0:
                     last_detect_time = now
-                    self.bridge.attach_and_start(g_swd_clock_hz)
+                    self.bridge.attach_and_start(g_swd_clock_hz, g_target_status["probe_rate_param"])
 
             batch_samples = []
 
@@ -306,12 +375,11 @@ class TelemetryCollector(threading.Thread):
                     g_target_status["mode"] = "simulation"
                     broadcast_sse({"type": "status", **g_target_status})
 
-            # 3. Fallback / Demonstration Mode (Simulating SWD clock speed)
+            # 3. Fallback / Demonstration Mode (Simulating SWD clock speed and active mode)
             if not self.bridge.is_active:
-                # Calculate number of full frames corresponding to the current SWD clock
-                target_fps = g_target_status["theoretical_max_fps"]
+                target_fps = g_target_status["active_fps"]
                 samples_in_frame = max(1, int(target_fps * FRAME_PERIOD))
-                dt = 1.0 / max(1, target_fps * WORDS_PER_FRAME)
+                dt = 1.0 / max(1, target_fps)
 
                 for _ in range(samples_in_frame):
                     sim_seq += 1
@@ -364,8 +432,13 @@ class TelemetryCollector(threading.Thread):
                     "swd": {
                         "clock_str": g_target_status["swd_clock_str"],
                         "clock_hz": g_swd_clock_hz,
+                        "sampling_mode": g_target_status["sampling_mode"],
+                        "custom_rate_hz": g_target_status["custom_rate_hz"],
+                        "active_fps": g_target_status["active_fps"],
+                        "active_sps": g_target_status["active_sps"],
+                        "bus_utilization_pct": g_target_status["bus_utilization_pct"],
                         "wire_mbps": g_target_status["theoretical_wire_mbps"],
-                        "payload_kbps": g_target_status["theoretical_payload_kbps"],
+                        "payload_kbps": g_target_status["active_payload_kbps"],
                         "words_per_frame": WORDS_PER_FRAME
                     }
                 })
@@ -453,6 +526,39 @@ class WebVisualizerHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "reconnect_triggered"}).encode("utf-8"))
             return
 
+        elif self.path.startswith("/api/set_mode"):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            mode = params.get("mode", [None])[0]
+            rate = params.get("rate", [None])[0]
+            rate_int = int(rate) if (rate and rate.isdigit()) else None
+
+            if mode in ["custom", "max"]:
+                update_swd_specs(mode=mode, custom_rate_hz=rate_int)
+                rate_param = g_target_status["probe_rate_param"]
+
+                global g_collector
+                if g_collector and g_collector.bridge.is_active:
+                    ok = g_collector.bridge.reconfigure_sampler(rate_param)
+                    if not ok:
+                        g_force_reconnect.set()
+
+                print(f"[API] Sampler mode set to '{mode}' (Custom Rate: {g_target_status['custom_rate_hz']} Hz, rate_param={rate_param})")
+                broadcast_sse({"type": "status", **g_target_status})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "status": "ok",
+                    "mode": g_target_status["sampling_mode"],
+                    "custom_rate_hz": g_target_status["custom_rate_hz"],
+                    "active_sps": g_target_status["active_sps"],
+                    "bus_utilization_pct": g_target_status["bus_utilization_pct"]
+                }).encode("utf-8"))
+                return
+            self.send_error(400, "Invalid mode parameter")
+            return
+
         elif self.path.startswith("/api/set_clock"):
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
@@ -460,7 +566,7 @@ class WebVisualizerHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     hz = int(params["hz"][0])
                     if hz in [500000, 1000000, 2000000, 5000000, 10000000]:
-                        update_swd_specs(hz)
+                        update_swd_specs(clock_hz=hz)
                         g_force_reconnect.set()
                         print(f"[API] SWD Clock switched to {g_target_status['swd_clock_str']} ({hz} Hz)")
                         broadcast_sse({"type": "status", **g_target_status})
@@ -485,12 +591,18 @@ def main():
     parser.add_argument("--port", type=int, default=WEB_PORT, help="Web dashboard port (default: 8080)")
     parser.add_argument("--clock", type=int, default=2000000, choices=[500000, 1000000, 2000000, 5000000, 10000000],
                         help="Initial SWD Clock frequency in Hz (default: 2000000 = 2.0 MHz)")
+    parser.add_argument("--mode", default="custom", choices=["custom", "max"],
+                        help="Sampling mode: 'custom' (configurable rate) or 'max' (wire speed saturation)")
+    parser.add_argument("--rate", type=int, default=2000,
+                        help="Sampling rate in Hz for custom mode (default: 2000)")
     parser.add_argument("--sim", action="store_true", help="Force local simulation mode without connecting to probe")
     args = parser.parse_args()
 
-    update_swd_specs(args.clock)
+    update_swd_specs(clock_hz=args.clock, mode=args.mode, custom_rate_hz=args.rate)
 
+    global g_collector
     collector = TelemetryCollector(probe_ip=args.probe_ip, force_sim=args.sim)
+    g_collector = collector
     collector.start()
 
     server = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), WebVisualizerHandler)
@@ -498,9 +610,11 @@ def main():
     print(f"  MekProbe Wire-Speed Autonomous Streaming (Zero Ping-Pong)")
     print("=" * 65)
     print(f"  [+] Web Dashboard UI:     http://localhost:{args.port}")
+    print(f"  [+] Active Mode:          {'模式一: 自主配置采样率' if args.mode == 'custom' else '模式二: 最大速率采样 (Wire-Speed)'}")
+    print(f"  [+] Target Sample Rate:   {g_target_status['custom_rate_hz']} Hz (Active SPS: {g_target_status['active_sps']:,} Sa/s)")
     print(f"  [+] SWD Physical Clock:   {g_target_status['swd_clock_str']} ({args.clock} Hz)")
     print(f"  [+] SWD Wire Bitrate:     {g_target_status['theoretical_wire_mbps']} Mbps")
-    print(f"  [+] Net Payload Capacity: {g_target_status['theoretical_payload_kbps']} KB/s ({g_target_status['theoretical_max_sps']:,} Sa/s)")
+    print(f"  [+] Net Payload Capacity: {g_target_status['theoretical_payload_kbps']} KB/s (Max: {g_target_status['theoretical_max_sps']:,} Sa/s)")
     print(f"  [+] Control Channel:      TCP {args.probe_ip}:{PROBE_TCP_PORT} (RTSP)")
     print(f"  [+] Telemetry Channel:    UDP 0.0.0.0:{PROBE_UDP_PORT} (RTP Push)")
     print(f"  [+] Target Memory Addr:   0x{TARGET_ADDR:08X} (AXI SRAM RAM_D1)")

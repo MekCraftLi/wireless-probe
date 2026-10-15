@@ -367,6 +367,163 @@
             box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
         }
 
+        /* Mode & Sampling Rate Control Panel */
+        .control-panel-bar {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .mode-tab-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .mode-tab-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn-mode-tab {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            padding: 7px 14px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-mode-tab:hover {
+            color: var(--text-main);
+            border-color: rgba(255, 255, 255, 0.2);
+            background: #1c2742;
+        }
+
+        .btn-mode-tab.active-mode1 {
+            background: rgba(0, 240, 255, 0.15);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+        }
+
+        .btn-mode-tab.active-mode2 {
+            background: rgba(0, 255, 136, 0.15);
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+            box-shadow: 0 0 12px rgba(0, 255, 136, 0.3);
+        }
+
+        .rate-config-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .rate-preset-pills {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .btn-rate-pill {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .btn-rate-pill:hover {
+            color: var(--accent-cyan);
+            border-color: var(--accent-cyan);
+        }
+
+        .btn-rate-pill.active {
+            background: var(--accent-cyan);
+            color: #000;
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+        }
+
+        .custom-rate-input-wrap {
+            display: inline-flex;
+            align-items: center;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 2px 8px;
+            gap: 4px;
+        }
+
+        .custom-rate-input-wrap input {
+            background: transparent;
+            border: none;
+            color: #fff;
+            width: 70px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-align: right;
+            outline: none;
+        }
+
+        .custom-rate-input-wrap .unit-tag {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .btn-apply-rate {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            color: var(--accent-cyan);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-apply-rate:hover {
+            background: var(--accent-cyan);
+            color: #000;
+            box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+        }
+
+        .max-mode-banner {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 255, 136, 0.1);
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+
         /* Footer */
         footer {
             padding: 10px 24px;
@@ -415,18 +572,57 @@
     </header>
 
     <main>
+        <!-- Mode & Sampling Rate Controller Bar -->
+        <div class="control-panel-bar">
+            <!-- Mode Selector Tabs -->
+            <div class="mode-tab-group">
+                <span class="mode-tab-label">工作模式:</span>
+                <button class="btn-mode-tab active-mode1" id="tabModeCustom" onclick="switchSamplingMode('custom')">
+                    <span>⚙️ 模式一: 自主可配置采样率</span>
+                </button>
+                <button class="btn-mode-tab" id="tabModeMax" onclick="switchSamplingMode('max')">
+                    <span>🚀 模式二: 最大速率采样 (Wire-Speed)</span>
+                </button>
+            </div>
+
+            <!-- Mode 1: Rate Configuration Section -->
+            <div class="rate-config-section" id="sectionModeCustom">
+                <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 600;">设定采样率:</span>
+                <div class="rate-preset-pills">
+                    <button class="btn-rate-pill" onclick="setPresetRate(100)" id="pill_100">100 Hz</button>
+                    <button class="btn-rate-pill" onclick="setPresetRate(500)" id="pill_500">500 Hz</button>
+                    <button class="btn-rate-pill" onclick="setPresetRate(1000)" id="pill_1000">1 kHz</button>
+                    <button class="btn-rate-pill active" onclick="setPresetRate(2000)" id="pill_2000">2 kHz (标准)</button>
+                    <button class="btn-rate-pill" onclick="setPresetRate(5000)" id="pill_5000">5 kHz</button>
+                    <button class="btn-rate-pill" onclick="setPresetRate(10000)" id="pill_10000">10 kHz</button>
+                    <button class="btn-rate-pill" onclick="setPresetRate(20000)" id="pill_20000">20 kHz</button>
+                </div>
+                <div class="custom-rate-input-wrap">
+                    <input type="number" id="inputCustomRate" min="10" max="250000" value="2000" step="100">
+                    <span class="unit-tag">Hz</span>
+                </div>
+                <button class="btn-apply-rate" onclick="applyCustomInputRate()">应用设置</button>
+            </div>
+
+            <!-- Mode 2: Wire Speed Active Info Banner -->
+            <div class="max-mode-banner" id="sectionModeMax" style="display: none;">
+                <span class="pulse-dot" style="color: var(--accent-green);"></span>
+                <span>⚡ 硬件极限线速饱和中：0 延时自主连续轮转，速率完全由当前 SWD 物理时钟驱动</span>
+            </div>
+        </div>
+
         <!-- Real-time Metrics Cards -->
         <div class="metrics-grid">
             <div class="metric-card" style="--card-accent: var(--accent-green);">
                 <div class="metric-label">
                     <span>全变量采样率 (Total Variable SPS)</span>
-                    <span id="badgeWireRate">WIRE MAX</span>
+                    <span id="badgeWireRate">LOCKED 2,000 Hz</span>
                 </div>
                 <div class="metric-value-row">
-                    <span id="valSPS" class="metric-value" style="color: var(--accent-green);">43,478</span>
+                    <span id="valSPS" class="metric-value" style="color: var(--accent-green);">32,000</span>
                     <span class="metric-unit">Sa / s</span>
                 </div>
-                <div class="metric-sub" id="subFrameRate">多通道快照: 2,717 帧/秒 (每帧 16 变量 / 64B)</div>
+                <div class="metric-sub" id="subFrameRate">单通道设定: 2,000 Hz (周期 500.0 μs) | 全变量 32,000 Sa/s</div>
             </div>
 
             <div class="metric-card" style="--card-accent: var(--accent-cyan);">
@@ -830,6 +1026,73 @@
 
         let currentClockHz = 2000000;
         let currentClockStr = "2.0 MHz";
+        let currentMode = "custom";
+        let currentCustomRate = 2000;
+
+        function switchSamplingMode(mode) {
+            currentMode = mode;
+            updateModeUI(mode, currentCustomRate);
+            fetch('/api/set_mode?mode=' + mode + '&rate=' + currentCustomRate, { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    console.log('Mode switch response:', d);
+                })
+                .catch(err => console.error(err));
+        }
+
+        function setPresetRate(rate) {
+            currentCustomRate = rate;
+            currentMode = 'custom';
+            document.getElementById('inputCustomRate').value = rate;
+            updateModeUI('custom', rate);
+            fetch('/api/set_mode?mode=custom&rate=' + rate, { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    console.log('Rate set response:', d);
+                })
+                .catch(err => console.error(err));
+        }
+
+        function applyCustomInputRate() {
+            const val = parseInt(document.getElementById('inputCustomRate').value);
+            if (val && val >= 10 && val <= 250000) {
+                setPresetRate(val);
+            } else {
+                alert('请输入有效的采样率数值 (10 Hz ~ 250,000 Hz)');
+            }
+        }
+
+        function updateModeUI(mode, rate) {
+            document.getElementById('tabModeCustom').className = 'btn-mode-tab' + (mode === 'custom' ? ' active-mode1' : '');
+            document.getElementById('tabModeMax').className = 'btn-mode-tab' + (mode === 'max' ? ' active-mode2' : '');
+
+            const secCustom = document.getElementById('sectionModeCustom');
+            const secMax = document.getElementById('sectionModeMax');
+            if (mode === 'custom') {
+                secCustom.style.display = 'flex';
+                secMax.style.display = 'none';
+            } else {
+                secCustom.style.display = 'none';
+                secMax.style.display = 'inline-flex';
+            }
+
+            // Sync preset pills active state
+            document.querySelectorAll('.btn-rate-pill').forEach(b => b.classList.remove('active'));
+            const matchedPill = document.getElementById('pill_' + rate);
+            if (matchedPill) matchedPill.classList.add('active');
+
+            // Update badge on SPS card
+            const badge = document.getElementById('badgeWireRate');
+            if (badge) {
+                if (mode === 'custom') {
+                    badge.textContent = `LOCKED ${rate.toLocaleString()} Hz`;
+                    badge.style.color = 'var(--accent-cyan)';
+                } else {
+                    badge.textContent = 'WIRE MAX 饱和';
+                    badge.style.color = 'var(--accent-green)';
+                }
+            }
+        }
 
         function setSwdClock(hz) {
             currentClockHz = hz;
@@ -863,7 +1126,11 @@
 
                 // 1. Total Variable Sampling Rate
                 document.getElementById('valSPS').textContent = variableSps.toLocaleString();
-                document.getElementById('subFrameRate').textContent = '多通道快照: ' + frameSps.toLocaleString() + ' 帧/秒 (每帧 16 变量 / 64B)';
+                if (currentMode === 'custom') {
+                    document.getElementById('subFrameRate').textContent = `设定采样率: ${currentCustomRate.toLocaleString()} Hz (周期 ${(1000000/currentCustomRate).toFixed(1)} μs) | 全变量 ${variableSps.toLocaleString()} Sa/s`;
+                } else {
+                    document.getElementById('subFrameRate').textContent = `多通道快照: ${frameSps.toLocaleString()} 帧/秒 (每帧 16 变量 / 64B) | 硬件满载轮转`;
+                }
 
                 // 2. SWD Payload Bandwidth
                 const throughput_kbps = (frameSps * 64) / 1024.0;
@@ -876,7 +1143,11 @@
                 document.getElementById('valSwdClock').textContent = currentClockStr;
                 const theoretical_max_kbps = (currentClockHz * 4.0 / 46.0) / 1024.0;
                 const bus_sat = Math.min(99.4, (throughput_kbps / theoretical_max_kbps) * 100).toFixed(1);
-                document.getElementById('subBusSat').textContent = `总线利用率: ${bus_sat}% (硬件线速饱和)`;
+                if (currentMode === 'custom') {
+                    document.getElementById('subBusSat').textContent = `总线利用率: ${bus_sat}% (自主节拍控制)`;
+                } else {
+                    document.getElementById('subBusSat').textContent = `总线利用率: ${bus_sat}% (硬件线速极限饱和)`;
+                }
 
                 // 4. Transport Health
                 const dropRate = (totalPackets + dropCount > 0) ? ((dropCount / (totalPackets + dropCount)) * 100).toFixed(2) : '0.00';
@@ -935,6 +1206,15 @@
                 else if (currentClockHz === 2000000) document.getElementById('clk_2m').classList.add('active');
                 else if (currentClockHz === 5000000) document.getElementById('clk_5m').classList.add('active');
                 else if (currentClockHz === 10000000) document.getElementById('clk_10m').classList.add('active');
+            }
+
+            if (info.sampling_mode) {
+                currentMode = info.sampling_mode;
+                if (info.custom_rate_hz) {
+                    currentCustomRate = info.custom_rate_hz;
+                    document.getElementById('inputCustomRate').value = currentCustomRate;
+                }
+                updateModeUI(currentMode, currentCustomRate);
             }
 
             if (info.mode === 'hardware_swd') {
