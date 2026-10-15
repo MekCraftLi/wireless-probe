@@ -97,13 +97,15 @@ def update_swd_specs(clock_hz=None, mode=None, custom_rate_hz=None):
 
     if g_sampling_mode == "max":
         active_fps = max_fps
-        active_sps = max_sps
+        active_sps = max_fps  # In max mode, active_sps is max_fps (e.g. 2,717 Sa/s @ 2M, 13,586 Sa/s @ 10M)
+        bus_words_sps = max_sps  # Total 32-bit words per sec (e.g. 43,478 Word/s @ 2M, 217,391 Word/s @ 10M)
         active_payload_kbps = round(max_payload_kbps, 1)
         bus_util_pct = 98.4
         probe_rate_param = 0  # 0 indicates wire speed saturation to probe firmware
     else:
         active_fps = min(g_custom_rate_hz, max_fps)
-        active_sps = active_fps * WORDS_PER_FRAME
+        active_sps = active_fps  # In custom mode, active_sps matches user configured rate (e.g. 2,000 Sa/s)!
+        bus_words_sps = active_fps * WORDS_PER_FRAME  # e.g. 32,000 Word/s
         active_payload_kbps = round((active_fps * BYTES_PER_FRAME) / 1024.0, 1)
         needed_cycles = active_fps * WORDS_PER_FRAME * SWD_CYCLES_PER_WORD
         bus_util_pct = min(100.0, round((needed_cycles / clock) * 100.0, 1))
@@ -116,7 +118,9 @@ def update_swd_specs(clock_hz=None, mode=None, custom_rate_hz=None):
     g_target_status["probe_rate_param"] = probe_rate_param
     g_target_status["active_fps"] = active_fps
     g_target_status["active_sps"] = active_sps
-    g_target_status["theoretical_max_sps"] = max_sps
+    g_target_status["bus_words_sps"] = bus_words_sps
+    g_target_status["theoretical_max_sps"] = max_fps
+    g_target_status["theoretical_max_words"] = max_sps
     g_target_status["theoretical_max_fps"] = max_fps
     g_target_status["theoretical_payload_kbps"] = round(max_payload_kbps, 1)
     g_target_status["active_payload_kbps"] = active_payload_kbps
@@ -124,13 +128,22 @@ def update_swd_specs(clock_hz=None, mode=None, custom_rate_hz=None):
     g_target_status["bus_utilization_pct"] = bus_util_pct
 
 def parse_telemetry_packet(raw_bytes):
-    """Parse 64-byte TelemetryData_t structure."""
+    """Parse 64-byte TelemetryData_t structure with strict integrity verification."""
     if len(raw_bytes) < 64:
         return None
     try:
-        fields = struct.unpack("<IIiffffffIIIIII", raw_bytes[:64])
+        # Format: 3 uint32 + 7 float + 6 uint32 = 16 x 4 = 64 bytes
+        fields = struct.unpack("<IIIfffffffIIIIII", raw_bytes[:64])
+        magic = fields[0]
+        test_pattern = fields[12]
+
+        # Strict integrity check: Must match TELEMETRY_MAGIC (0x54454C4D)
+        # and TEST_PATTERN (0xA5A55A5A)
+        if magic != TELEMETRY_MAGIC or test_pattern != TEST_PATTERN:
+            return None
+
         return {
-            "magic": f"0x{fields[0]:08X}",
+            "magic": f"0x{magic:08X}",
             "seq": fields[1],
             "timestamp_us": fields[2],
             "sine": round(fields[3], 2),
@@ -142,7 +155,8 @@ def parse_telemetry_packet(raw_bytes):
             "noise": round(fields[9], 2),
             "cpu_load": fields[10],
             "counter": fields[11],
-            "pattern": f"0x{fields[12]:08X}"
+            "pattern": f"0x{test_pattern:08X}",
+            "verified": True
         }
     except Exception:
         return None
@@ -343,6 +357,7 @@ class TelemetryCollector(threading.Thread):
         FRAME_PERIOD = 0.01667  # 60 FPS frame time (16.67 ms)
         next_frame_time = time.perf_counter()
         last_detect_time = 0
+        sim_sample_accumulator = 0.0
 
         while g_running:
             # 1. Background Hardware Target Attachment or Clock Switch
@@ -378,7 +393,9 @@ class TelemetryCollector(threading.Thread):
             # 3. Fallback / Demonstration Mode (Simulating SWD clock speed and active mode)
             if not self.bridge.is_active:
                 target_fps = g_target_status["active_fps"]
-                samples_in_frame = max(1, int(target_fps * FRAME_PERIOD))
+                sim_sample_accumulator += target_fps * FRAME_PERIOD
+                samples_in_frame = int(sim_sample_accumulator)
+                sim_sample_accumulator -= samples_in_frame
                 dt = 1.0 / max(1, target_fps)
 
                 for _ in range(samples_in_frame):
@@ -421,7 +438,8 @@ class TelemetryCollector(threading.Thread):
                         "noise": round(noise, 2),
                         "cpu_load": int(20 + 8 * (1.0 + math.sin(t * 0.8))),
                         "counter": sim_seq * 13,
-                        "pattern": f"0x{TEST_PATTERN:08X}"
+                        "pattern": f"0x{TEST_PATTERN:08X}",
+                        "verified": True
                     })
 
             # 4. Broadcast Batch at 60 FPS
