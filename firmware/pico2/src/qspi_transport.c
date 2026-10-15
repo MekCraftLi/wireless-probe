@@ -1,4 +1,6 @@
 #include <string.h>
+#include <stdio.h>
+#include "tusb.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
@@ -13,6 +15,7 @@
 #include "probe_config.h"
 #include "DAP_config.h"
 #include "DAP.h"
+#include "sampler_engine.h"
 #include "qspi.pio.h"
 
 #define ESP_SPI_CMD_WRDMA_QUAD  0x23
@@ -151,6 +154,47 @@ static void qspi_pio_read_quad_payload(uint8_t *data, size_t len) {
     pio_sm_set_enabled(s_pio, s_sm_rx, false);
 }
 
+void qspi_bus_force_sync(void) {
+    // 1. Release CS (CS = 1) and deassert REQ (REQ = 1)
+    gpio_put(PICO_QSPI_PIN_CS, 1);
+    gpio_put(PICO_PIN_P2_REQ, 1);
+    busy_wait_us_32(50);
+
+    // 2. Pulse SCLK 64 times with CS=1 to flush slave shift register bit counter
+    gpio_set_function(PICO_QSPI_PIN_CLK, GPIO_FUNC_SIO);
+    gpio_set_dir(PICO_QSPI_PIN_CLK, GPIO_OUT);
+    for (int i = 0; i < 64; i++) {
+        gpio_put(PICO_QSPI_PIN_CLK, 1);
+        busy_wait_us_32(1);
+        gpio_put(PICO_QSPI_PIN_CLK, 0);
+        busy_wait_us_32(1);
+    }
+    pio_gpio_init(s_pio, PICO_QSPI_PIN_CLK);
+    busy_wait_us_32(50);
+
+    // 3. Clear PIO FIFOs and restart all state machines
+    pio_sm_set_enabled(s_pio, s_sm_cmd, false);
+    pio_sm_set_enabled(s_pio, s_sm_tx, false);
+    pio_sm_set_enabled(s_pio, s_sm_rx, false);
+    pio_sm_clear_fifos(s_pio, s_sm_cmd);
+    pio_sm_clear_fifos(s_pio, s_sm_tx);
+    pio_sm_clear_fifos(s_pio, s_sm_rx);
+
+    // 4. Force termination of any stuck WRDMA transaction on ESP32-C5
+    gpio_put(PICO_QSPI_PIN_CS, 0);
+    busy_wait_us_32(5);
+    qspi_pio_send_cmd_dummy(ESP_SPI_CMD_WR_END);
+    gpio_put(PICO_QSPI_PIN_CS, 1);
+    busy_wait_us_32(10);
+
+    // 5. Force termination of any stuck RDDMA transaction on ESP32-C5
+    gpio_put(PICO_QSPI_PIN_CS, 0);
+    busy_wait_us_32(5);
+    qspi_pio_send_cmd_dummy(ESP_SPI_CMD_INT0);
+    gpio_put(PICO_QSPI_PIN_CS, 1);
+    busy_wait_us_32(50);
+}
+
 void qspi_transport_init(void) {
     s_tx_queue = xQueueCreate(8, sizeof(tx_queue_item_t));
 
@@ -165,6 +209,9 @@ void qspi_transport_init(void) {
 
     // 2. PIO QSPI setup
     init_qspi_pio_sm();
+
+    // 3. Force bus flush & synchronization on boot
+    qspi_bus_force_sync();
 }
 
 bool qspi_transport_send_frame(ufmf_channel_t ch, const uint8_t *payload, uint16_t len) {
@@ -197,7 +244,12 @@ static void process_incoming_frame(const uint8_t *frame_data, size_t total_len) 
     uint16_t payload_len = hdr->payload_len;
 
     if (hdr->channel == UFMF_CH_CTRL && payload_len > 0) {
-        uint32_t resp_len = DAP_ProcessCommand(payload, s_dap_resp_buf);
+        uint32_t resp_len = 0;
+        if (payload[0] >= 0x80 && payload[0] <= 0x8F) {
+            resp_len = sampler_process_vendor_command(payload, s_dap_resp_buf);
+        } else {
+            resp_len = DAP_ProcessCommand(payload, s_dap_resp_buf);
+        }
         if (resp_len > 0) {
             qspi_transport_send_frame(UFMF_CH_CTRL, s_dap_resp_buf, (uint16_t)resp_len);
         }
@@ -220,6 +272,18 @@ static void qspi_worker_task(void *pvParameters) {
         bool c5_ready = (gpio_get(PICO_PIN_C5_RDY) == 0);
         s_stats.c5_ready = c5_ready;
 
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        static uint32_t last_diag_print = 0;
+        if (tud_cdc_connected() && (now - last_diag_print > 1000)) {
+            last_diag_print = now;
+            char diag[128];
+            int dlen = snprintf(diag, sizeof(diag), "[Pico2] C5_RDY(GP22)=%d | TX_pkts=%lu RX_pkts=%lu Drop=%lu | REQ(GP26)=%d\r\n",
+                               gpio_get(PICO_PIN_C5_RDY), s_stats.tx_packets, s_stats.rx_packets, s_stats.dropped_packets,
+                               gpio_get(PICO_PIN_P2_REQ));
+            tud_cdc_write(diag, dlen);
+            tud_cdc_write_flush();
+        }
+
         tx_queue_item_t item;
         bool has_tx = (xQueueReceive(s_tx_queue, &item, 0) == pdTRUE);
 
@@ -234,7 +298,7 @@ static void qspi_worker_task(void *pvParameters) {
         }
 
         // Periodic heartbeat ping to C5 if idle for > 1s
-        uint32_t now = to_ms_since_boot(get_absolute_time());
+        now = to_ms_since_boot(get_absolute_time());
         if (!has_tx && (now - last_heartbeat > 1000)) {
             last_heartbeat = now;
             ufmf_sys_info_t info = {
@@ -317,7 +381,7 @@ static void qspi_worker_task(void *pvParameters) {
 
 void qspi_transport_start_task(void) {
     TaskHandle_t h = NULL;
-    xTaskCreate(qspi_worker_task, "qspi_worker", 2048, NULL, 4, &h);
+    xTaskCreate(qspi_worker_task, "qspi_worker", 1024, NULL, 4, &h);
 #if (configNUMBER_OF_CORES > 1)
     if (h) {
         vTaskCoreAffinitySet(h, (1 << 1));

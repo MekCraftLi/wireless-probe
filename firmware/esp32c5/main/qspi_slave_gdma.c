@@ -42,12 +42,12 @@ esp_err_t qspi_slave_gdma_init(void) {
     };
     gpio_config(&io_conf_req);
 
-    // Pull-downs on SPI bus pins to test physical driving
+    // Pull-ups on SPI bus pins (Mode 0: CS idle high, D0-D3 pulled up)
     gpio_set_pull_mode(PIN_QSPI_CS, GPIO_PULLUP_ONLY);
-    gpio_set_pull_mode(PIN_QSPI_D0, GPIO_PULLDOWN_ONLY);
-    gpio_set_pull_mode(PIN_QSPI_D1, GPIO_PULLDOWN_ONLY);
-    gpio_set_pull_mode(PIN_QSPI_D2, GPIO_PULLDOWN_ONLY);
-    gpio_set_pull_mode(PIN_QSPI_D3, GPIO_PULLDOWN_ONLY);
+    gpio_set_pull_mode(PIN_QSPI_D0, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(PIN_QSPI_D1, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(PIN_QSPI_D2, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(PIN_QSPI_D3, GPIO_PULLUP_ONLY);
 
     // 2. Allocate DMA TX buffer (64-byte aligned for cache)
     s_dma_tx_buf = heap_caps_aligned_alloc(64, QSPI_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -110,6 +110,52 @@ esp_err_t qspi_slave_gdma_init(void) {
     return ESP_OK;
 }
 
+esp_err_t qspi_slave_gdma_reset(void) {
+    ESP_LOGW(TAG, "Executing QSPI Slave GDMA self-healing soft reset...");
+    spi_slave_hd_deinit(SPI2_HOST);
+
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = PIN_QSPI_D0,
+        .miso_io_num = PIN_QSPI_D1,
+        .sclk_io_num = PIN_QSPI_SCLK,
+        .quadwp_io_num = PIN_QSPI_D2,
+        .quadhd_io_num = PIN_QSPI_D3,
+        .max_transfer_sz = QSPI_BUFFER_SIZE,
+        .flags = SPICOMMON_BUSFLAG_QUAD,
+    };
+
+    spi_slave_hd_slot_config_t slvcfg = {
+        .spics_io_num = PIN_QSPI_CS,
+        .mode = 0,
+        .command_bits = 8,
+        .address_bits = 8,
+        .dummy_bits = 8,
+        .queue_size = QSPI_RX_QUEUE_SIZE,
+        .dma_chan = SPI_DMA_CH_AUTO,
+        .flags = 0,
+    };
+
+    esp_err_t ret = spi_slave_hd_init(SPI2_HOST, &buscfg, &slvcfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "spi_slave_hd_init failed during reset: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    for (int i = 0; i < QSPI_RX_QUEUE_SIZE; i++) {
+        if (s_rx_buffers[i]) {
+            memset(s_rx_buffers[i], 0, QSPI_BUFFER_SIZE);
+            s_rx_trans_pool[i].data = s_rx_buffers[i];
+            s_rx_trans_pool[i].len = QSPI_BUFFER_SIZE;
+            s_rx_trans_pool[i].flags = SPI_SLAVE_HD_TRANS_DMA_BUFFER_ALIGN_AUTO;
+            spi_slave_hd_queue_trans(SPI2_HOST, SPI_SLAVE_CHAN_RX, &s_rx_trans_pool[i], portMAX_DELAY);
+        }
+    }
+
+    gpio_set_level(PIN_FLOW_READY_OUT, 1);
+    ESP_LOGI(TAG, "QSPI Slave GDMA self-healing soft reset complete.");
+    return ESP_OK;
+}
+
 esp_err_t qspi_slave_send(const uint8_t *data, size_t len, TickType_t timeout) {
     if (len > QSPI_BUFFER_SIZE) len = QSPI_BUFFER_SIZE;
     size_t align_len = (len + 3) & ~3;
@@ -120,7 +166,11 @@ esp_err_t qspi_slave_send(const uint8_t *data, size_t len, TickType_t timeout) {
     s_tx_trans.flags = SPI_SLAVE_HD_TRANS_DMA_BUFFER_ALIGN_AUTO;
 
     esp_err_t ret = spi_slave_hd_queue_trans(SPI2_HOST, SPI_SLAVE_CHAN_TX, &s_tx_trans, timeout);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) {
+        s_stats.errors++;
+        qspi_slave_gdma_reset();
+        return ret;
+    }
 
     gpio_set_level(PIN_FLOW_READY_OUT, 0); // Assert ready (low)
 
@@ -134,6 +184,7 @@ esp_err_t qspi_slave_send(const uint8_t *data, size_t len, TickType_t timeout) {
         s_stats.tx_bytes += len;
     } else {
         s_stats.errors++;
+        qspi_slave_gdma_reset();
     }
     return ret;
 }

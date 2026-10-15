@@ -128,8 +128,8 @@ static void sampler_worker_task(void *pvParameters) {
 
     while (1) {
         if (!s_running) {
-            // Wait for START notification
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
         }
 
         uint64_t t_start = time_us_64();
@@ -168,7 +168,7 @@ void sampler_engine_init(void) {
 }
 
 void sampler_engine_start_task(void) {
-    xTaskCreate(sampler_worker_task, "sampler", 2048, NULL, SAMPLER_TASK_PRIO, &s_sampler_task_handle);
+    xTaskCreate(sampler_worker_task, "sampler", 512, NULL, SAMPLER_TASK_PRIO, &s_sampler_task_handle);
 #if (configNUMBER_OF_CORES > 1)
     if (s_sampler_task_handle) {
         vTaskCoreAffinitySet(s_sampler_task_handle, (1 << 1)); /* Core 1 affinity */

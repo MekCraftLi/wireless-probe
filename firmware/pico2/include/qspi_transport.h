@@ -36,6 +36,7 @@ typedef struct {
 } qspi_transport_stats_t;
 
 void qspi_transport_init(void);
+void qspi_bus_force_sync(void);
 void qspi_transport_start_task(void);
 bool qspi_transport_send_frame(ufmf_channel_t ch, const uint8_t *payload, uint16_t len);
 void qspi_transport_get_stats(qspi_transport_stats_t *stats);

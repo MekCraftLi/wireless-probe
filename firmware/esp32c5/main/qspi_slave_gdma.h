@@ -39,6 +39,7 @@ typedef struct {
 } qspi_stats_t;
 
 esp_err_t qspi_slave_gdma_init(void);
+esp_err_t qspi_slave_gdma_reset(void);
 esp_err_t qspi_slave_send(const uint8_t *data, size_t len, TickType_t timeout);
 int qspi_slave_receive(uint8_t *buf, size_t max_len, TickType_t timeout);
 void qspi_slave_get_stats(qspi_stats_t *stats);

@@ -85,6 +85,10 @@ static void qspi_rx_task(void *pvParameters) {
             if (++rx_timeouts >= 6) {
                 rx_timeouts = 0;
                 ESP_LOGI(TAG, "QSPI RX waiting... (no packet completed yet)");
+                if (net_sockets_client_connected(UFMF_CH_CTRL) || net_sockets_client_connected(UFMF_CH_BULK_MEM)) {
+                    ESP_LOGW(TAG, "Watchdog: TCP client connected but QSPI idle for >3s, triggering self-healing GDMA reset...");
+                    qspi_slave_gdma_reset();
+                }
             }
         }
     }
@@ -92,16 +96,6 @@ static void qspi_rx_task(void *pvParameters) {
 
 /* System monitor / status display task */
 static void status_monitor_task(void *pvParameters) {
-    // Configure candidate pins as input with pulldown to check if any line is connected
-    gpio_config_t cand_conf = {
-        .pin_bit_mask = (1ULL << 0) | (1ULL << 1) | (1ULL << 2) | (1ULL << 3) | (1ULL << 7) | (1ULL << 25),
-        .mode = GPIO_MODE_INPUT,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&cand_conf);
-
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(2000));
         char ip_str[32] = {0};
@@ -141,6 +135,13 @@ static void status_monitor_task(void *pvParameters) {
                  cs, clk, d0, d1, d2, d3, req, rdy);
         ESP_LOGI(TAG, "[CandPins] G7:%d G0:%d G1:%d G2:%d G3:%d G24:%d G25:%d | HW_Cmd:0x%02X Bits:%lu Intr:0x%04lX",
                  g7, g0, g1, g2, g3, g24, g25, (unsigned int)last_cmd, (unsigned long)bitlen, (unsigned long)dma_int);
+
+        char pin_buf[32];
+        for (int p = 0; p <= 28; p++) {
+            pin_buf[p] = gpio_get_level(p) ? '1' : '0';
+        }
+        pin_buf[29] = '\0';
+        ESP_LOGI(TAG, "[ALL GPIOs 0..28]: %s", pin_buf);
     }
 }
 
