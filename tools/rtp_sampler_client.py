@@ -82,6 +82,49 @@ class RTPSamplerClient:
         # Send a registration UDP ping to probe so ESP32-C5 learns local UDP port immediately
         self.udp_sock.sendto(b"PING", (self.host, self.udp_port))
 
+    def init_swd(self, freq: int = 500000):
+        """Perform standard DAP connect, clock, SWD line reset, and debug power-up."""
+        # 1. DAP_Connect (Port SWD = 1)
+        self.tcp_sock.sendall(bytes([0x02, 0x01]))
+        r = self.tcp_sock.recv(64)
+        if len(r) < 2 or r[1] != 1:
+            raise RuntimeError(f"DAP_Connect failed: {list(r)}")
+
+        # 2. DAP_SWJ_Clock
+        self.tcp_sock.sendall(bytes([0x11]) + struct.pack("<I", freq))
+        self.tcp_sock.recv(64)
+
+        # 3. DAP_TransferConfigure
+        self.tcp_sock.sendall(bytes([0x04, 0x00, 0x32, 0x00, 0x00, 0x00]))
+        self.tcp_sock.recv(64)
+
+        # 4. SWD Line Reset + Switch Sequence
+        self.tcp_sock.sendall(bytes([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+        self.tcp_sock.recv(64)
+        self.tcp_sock.sendall(bytes([0x12, 16, 0x9E, 0xE7]))
+        self.tcp_sock.recv(64)
+        self.tcp_sock.sendall(bytes([0x12, 56, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+        self.tcp_sock.recv(64)
+        self.tcp_sock.sendall(bytes([0x12, 8, 0x00]))
+        self.tcp_sock.recv(64)
+
+        # 5. Read DPIDR to verify connection
+        self.tcp_sock.sendall(bytes([0x05, 0x00, 0x01, 0x02]))
+        r = self.tcp_sock.recv(64)
+        if len(r) < 7 or r[1] != 1 or (r[2] & 0x07) != 1:
+            raise RuntimeError(f"Failed to read DPIDR: {list(r)}")
+        dpidr = struct.unpack("<I", r[3:7])[0]
+        print(f"[+] SWD Initialized! Target DPIDR = 0x{dpidr:08X}")
+
+        # 6. Power up debug and system domains (DP CTRL/STAT)
+        self.tcp_sock.sendall(bytes([0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50]))
+        self.tcp_sock.recv(64)
+        self.tcp_sock.sendall(bytes([0x05, 0x00, 0x01, 0x06]))
+        r = self.tcp_sock.recv(64)
+        if len(r) >= 7:
+            ctrl_stat = struct.unpack("<I", r[3:7])[0]
+            print(f"[+] Debug Subsystem Powered: CTRL/STAT = 0x{ctrl_stat:08X}")
+
     def setup(self, mode: int, addrs: List[int], burst_words: int = 128, rate_hz: int = 0) -> Dict[str, Any]:
         """Send RTSP_CMD_SETUP over TCP."""
         var_count = len(addrs)
@@ -155,6 +198,7 @@ def run_benchmark(host: str, mode_str: str, addr_val: int, burst_words: int, rat
     client = RTPSamplerClient(host=host)
     try:
         client.connect()
+        client.init_swd(freq=500000)
         cfg = client.setup(mode=mode, addrs=addrs, burst_words=burst_words, rate_hz=rate_hz)
         print("\n" + "=" * 70)
         print("  RTSP / RTP AUTONOMOUS TELEMETRY BENCHMARK")
@@ -166,7 +210,8 @@ def run_benchmark(host: str, mode_str: str, addr_val: int, burst_words: int, rat
         print(f"  Probe Est. Max   : {cfg['max_wire_sps']:,} SPS")
         print("=" * 70)
 
-        input("\nPress ENTER to start autonomous streaming...")
+        if sys.stdin.isatty():
+            input("\nPress ENTER to start autonomous streaming...")
         print("[*] Starting RTSP PLAY stream...")
         client.play()
 

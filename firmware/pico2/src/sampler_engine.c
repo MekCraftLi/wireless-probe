@@ -121,14 +121,27 @@ static inline void sampler_read_multivar_burst(void) {
     }
 }
 
-/* Autonomous high-speed sampling worker task running on Core 1 */
+#include <stdio.h>
+#include "tusb.h"
+
+static void sampler_diag(const char *msg) {
+    if (tud_cdc_connected()) {
+        tud_cdc_write(msg, strlen(msg));
+        tud_cdc_write_flush();
+    }
+}
+
+/* Autonomous high-speed sampling worker task */
 static void sampler_worker_task(void *pvParameters) {
     uint32_t last_calc_time = to_ms_since_boot(get_absolute_time());
     uint32_t last_sample_cnt = 0;
+    static uint32_t diag_cnt = 0;
+
+    sampler_diag("[Sampler] Worker Task started!\r\n");
 
     while (1) {
         if (!s_running) {
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
@@ -140,12 +153,21 @@ static void sampler_worker_task(void *pvParameters) {
             sampler_read_multivar_burst();
         }
 
+        if (diag_cnt++ < 5 || (diag_cnt % 500 == 0)) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[Sampler] Frame #%lu sent! Samples=%lu Err=%lu Ovr=%lu\r\n",
+                     s_stats.total_frames, s_stats.total_samples, s_stats.swd_errors, s_stats.buffer_overruns);
+            sampler_diag(buf);
+        }
+
         // Periodic SPS computation
         uint32_t now_ms = to_ms_since_boot(get_absolute_time());
         if (now_ms - last_calc_time >= 500) {
             uint32_t delta_samples = s_stats.total_samples - last_sample_cnt;
             uint32_t delta_ms = now_ms - last_calc_time;
-            s_stats.wire_rate_sps = (delta_samples * 1000) / delta_ms;
+            if (delta_ms > 0) {
+                s_stats.wire_rate_sps = (delta_samples * 1000) / delta_ms;
+            }
             last_sample_cnt = s_stats.total_samples;
             last_calc_time = now_ms;
         }
@@ -168,10 +190,14 @@ void sampler_engine_init(void) {
 }
 
 void sampler_engine_start_task(void) {
-    xTaskCreate(sampler_worker_task, "sampler", 512, NULL, SAMPLER_TASK_PRIO, &s_sampler_task_handle);
+    BaseType_t ret = xTaskCreate(sampler_worker_task, "sampler", 1024, NULL, SAMPLER_TASK_PRIO, &s_sampler_task_handle);
+    if (ret != pdPASS) {
+        sampler_diag("[Sampler] ERROR: xTaskCreate failed!\r\n");
+    }
 #if (configNUMBER_OF_CORES > 1)
     if (s_sampler_task_handle) {
-        vTaskCoreAffinitySet(s_sampler_task_handle, (1 << 1)); /* Core 1 affinity */
+        /* Run sampler on Core 0 so Core 1 is dedicated to high-speed QSPI DMA */
+        vTaskCoreAffinitySet(s_sampler_task_handle, (1 << 0));
     }
 #endif
 }
@@ -206,6 +232,11 @@ uint32_t sampler_process_vendor_command(const uint8_t *request, uint8_t *respons
             s_rtp_seq = 0;
             memset(&s_stats, 0, sizeof(s_stats));
 
+            char sbuf[128];
+            snprintf(sbuf, sizeof(sbuf), "[Sampler] SETUP: mode=%d burst=%d addrs[0]=0x%08lx\r\n",
+                     s_mode, s_burst_words, s_target_addrs[0]);
+            sampler_diag(sbuf);
+
             response[1] = 0; // Status OK
             response[2] = (uint8_t)(s_session_id & 0xFF);
             response[3] = (uint8_t)(s_session_id >> 8);
@@ -221,6 +252,7 @@ uint32_t sampler_process_vendor_command(const uint8_t *request, uint8_t *respons
 
         case RTSP_CMD_PLAY: {
             s_running = true;
+            sampler_diag("[Sampler] PLAY received! s_running=1\r\n");
             if (s_sampler_task_handle) {
                 xTaskNotifyGive(s_sampler_task_handle);
             }
@@ -231,6 +263,7 @@ uint32_t sampler_process_vendor_command(const uint8_t *request, uint8_t *respons
 
         case RTSP_CMD_TEARDOWN: {
             s_running = false;
+            sampler_diag("[Sampler] TEARDOWN received! s_running=0\r\n");
             response[1] = 0; // OK
             resp_len = 2;
             break;

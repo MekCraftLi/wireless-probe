@@ -39,9 +39,9 @@ def main():
         return 1
     print("  [OK] SWD Port Connected.")
 
-    # 2. DAP_SWJ_Clock (1 MHz = 0x000F4240)
-    xfer(s, [0x11, 0x40, 0x42, 0x0F, 0x00], "DAP_SWJ_Clock")
-    print("  [OK] SWD Clock set to 1.0 MHz.")
+    # 2. DAP_SWJ_Clock (500 kHz = 0x0007A120)
+    xfer(s, [0x11, 0x20, 0xA1, 0x07, 0x00], "DAP_SWJ_Clock")
+    print("  [OK] SWD Clock set to 500 kHz.")
 
     # 3. DAP_TransferConfigure (idle=0, retry=50, match_retry=0)
     xfer(s, [0x04, 0x00, 0x32, 0x00, 0x00, 0x00], "DAP_TransferConfigure")
@@ -73,11 +73,45 @@ def main():
         }
         name = chip_map.get(dpidr, "Unknown ARM CoreSight DP")
         print(f"  Target Type: {name}\n")
+
+        # 6. Power-up debug subsystem
+        print("Powering up CoreSight debug subsystem...")
+        # Write DP_CTRL_STAT (0x50000000 = CSYSPWRUPREQ | CDBGPWRUPREQ)
+        xfer(s, [0x05, 0x00, 0x01, 0x04, 0x00, 0x00, 0x00, 0x50], "Power Up Request")
+        r = xfer(s, [0x05, 0x00, 0x01, 0x06], "Read CTRL/STAT")
+        if len(r) >= 7:
+            ctrl_stat = struct.unpack("<I", r[3:7])[0]
+            print(f"  [OK] DP CTRL/STAT = 0x{ctrl_stat:08X}")
+
+        # 7. Read CoreSight CPUID via MEM-AP (AP0)
+        # Select AP0, Bank 0 (CSW/TAR)
+        xfer(s, [0x05, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00], "DP_SELECT AP0")
+        # AP0 CSW = 0x23000052 (Size=32-bit, DbgStatus, AddrInc=Single)
+        xfer(s, [0x05, 0x00, 0x01, 0x01, 0x52, 0x00, 0x00, 0x23], "AP0_CSW")
+        # AP0 TAR = 0xE000ED00 (SCB CPUID base address)
+        xfer(s, [0x05, 0x00, 0x01, 0x05, 0x00, 0xED, 0x00, 0xE0], "AP0_TAR CPUID")
+        # AP0 DRW dummy read (initiates bus cycle)
+        xfer(s, [0x05, 0x00, 0x01, 0x0F], "AP0_DRW Read Post")
+        # DP RDBUFF read actual captured data
+        r = xfer(s, [0x05, 0x00, 0x01, 0x0E], "DP_RDBUFF")
+        if len(r) >= 7 and r[1] == 1 and (r[2] & 0x07) == 1:
+            cpuid = struct.unpack("<I", r[3:7])[0]
+            part_no = (cpuid >> 4) & 0x0FFF
+            part_names = {
+                0xC27: "Cortex-M7 (STM32H7)",
+                0xC24: "Cortex-M4 (STM32F4)",
+                0xC23: "Cortex-M3 (STM32F1)",
+                0xC60: "Cortex-M0+ (RP2040)",
+                0xD21: "Cortex-M33 (RP2350)",
+            }
+            core_name = part_names.get(part_no, f"Part 0x{part_no:03X}")
+            print(f"  [OK] ARM Core CPUID: 0x{cpuid:08X} -> {core_name}")
+            print(f"  Implementer: 0x{(cpuid>>24)&0xFF:02X} (ARM), Variant: r{(cpuid>>20)&0xF}p{cpuid&0xF}")
     else:
         print(f"\n  [ERROR] Read DPIDR failed! Raw response: {list(r)}")
         print("  Check SWD wiring: Pin 4 (SWCLK), Pin 5 (SWDIO), and Pin 3 (GND Common)!")
 
-    # 6. DAP_Disconnect
+    # 8. DAP_Disconnect
     xfer(s, [0x03], "DAP_Disconnect")
     s.close()
     return 0

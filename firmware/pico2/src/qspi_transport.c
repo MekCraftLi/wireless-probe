@@ -224,11 +224,22 @@ bool qspi_transport_send_frame(ufmf_channel_t ch, const uint8_t *payload, uint16
         memcpy(item.data, payload, len);
     }
 
-    if (xQueueSend(s_tx_queue, &item, 0) != pdTRUE) {
-        s_stats.dropped_packets++;
-        return false;
+    if (ch == UFMF_CH_CTRL || ch == UFMF_CH_SYS) {
+        /* High-priority control plane: send to front, drop stale trace item if queue full */
+        if (xQueueSendToFront(s_tx_queue, &item, pdMS_TO_TICKS(50)) != pdTRUE) {
+            tx_queue_item_t discard;
+            xQueueReceive(s_tx_queue, &discard, 0);
+            xQueueSendToFront(s_tx_queue, &item, 0);
+        }
+        return true;
+    } else {
+        /* Data plane: non-blocking, drop on backpressure */
+        if (xQueueSend(s_tx_queue, &item, 0) != pdTRUE) {
+            s_stats.dropped_packets++;
+            return false;
+        }
+        return true;
     }
-    return true;
 }
 
 static void process_incoming_frame(const uint8_t *frame_data, size_t total_len) {
