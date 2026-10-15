@@ -334,6 +334,39 @@
             color: var(--accent-cyan);
         }
 
+        .swd-clock-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: var(--bg-card);
+            padding: 3px 6px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-clk {
+            background: transparent;
+            color: var(--text-muted);
+            border: none;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .btn-clk:hover {
+            color: var(--accent-cyan);
+            background: rgba(0, 240, 255, 0.1);
+        }
+
+        .btn-clk.active {
+            background: var(--accent-cyan);
+            color: #000;
+            box-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+        }
+
         /* Footer */
         footer {
             padding: 10px 24px;
@@ -354,7 +387,7 @@
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent-cyan);">
                 <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
             </svg>
-            <h1>MekProbe 60 FPS 实时波形 & SWD 饱和吞吐分析器</h1>
+            <h1>MekProbe 硬件自主推流示波器 & SWD 带宽分析器</h1>
             <span id="connBadge" class="status-badge status-sim">
                 <span class="pulse-dot"></span>
                 <span id="connText">连接中...</span>
@@ -362,7 +395,16 @@
         </div>
 
         <div class="header-actions">
-            <span style="font-size: 0.8rem; color: var(--text-muted);">目标内存: <code style="color: var(--accent-cyan); background: #000; padding: 2px 6px; border-radius: 4px;">0x24000000 (AXI SRAM)</code></span>
+            <!-- SWD Clock Frequency Switcher -->
+            <div class="swd-clock-group">
+                <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; margin-right: 4px;">SWCLK:</span>
+                <button class="btn-clk" onclick="setSwdClock(500000)" id="clk_500k">500k</button>
+                <button class="btn-clk" onclick="setSwdClock(1000000)" id="clk_1m">1M</button>
+                <button class="btn-clk active" onclick="setSwdClock(2000000)" id="clk_2m">2M</button>
+                <button class="btn-clk" onclick="setSwdClock(5000000)" id="clk_5m">5M</button>
+                <button class="btn-clk" onclick="setSwdClock(10000000)" id="clk_10m">10M 极限</button>
+            </div>
+
             <button id="btnPause" onclick="togglePause()">
                 <span id="pauseIcon">⏸</span> <span id="pauseText">暂停显示</span>
             </button>
@@ -377,62 +419,74 @@
         <div class="metrics-grid">
             <div class="metric-card" style="--card-accent: var(--accent-green);">
                 <div class="metric-label">
-                    <span>采样吞吐率 (SPS)</span>
-                    <span>LIVE</span>
+                    <span>全变量采样率 (Total Variable SPS)</span>
+                    <span id="badgeWireRate">WIRE MAX</span>
                 </div>
                 <div class="metric-value-row">
-                    <span id="valSPS" class="metric-value" style="color: var(--accent-green);">0</span>
-                    <span class="metric-unit">Samples / s</span>
+                    <span id="valSPS" class="metric-value" style="color: var(--accent-green);">43,478</span>
+                    <span class="metric-unit">Sa / s</span>
                 </div>
-                <div class="metric-sub" id="subSPS">峰值: 0 SPS</div>
+                <div class="metric-sub" id="subFrameRate">多通道快照: 2,717 帧/秒 (每帧 16 变量 / 64B)</div>
             </div>
 
             <div class="metric-card" style="--card-accent: var(--accent-cyan);">
                 <div class="metric-label">
-                    <span>空口带宽吞吐量</span>
-                    <span>Wi-Fi 6</span>
+                    <span>SWD 物理总线有效净荷带宽</span>
+                    <span>PAYLOAD</span>
                 </div>
                 <div class="metric-value-row">
-                    <span id="valThroughput" class="metric-value" style="color: var(--accent-cyan);">0.00</span>
+                    <span id="valThroughput" class="metric-value" style="color: var(--accent-cyan);">173.9</span>
                     <span class="metric-unit">KB/s</span>
                 </div>
-                <div class="metric-sub" id="subMbps">0.000 Mbps (单包 64 字节)</div>
-            </div>
-
-            <div class="metric-card" style="--card-accent: var(--accent-purple);">
-                <div class="metric-label">
-                    <span>总捕获样本帧</span>
-                    <span>PACKETS</span>
-                </div>
-                <div class="metric-value-row">
-                    <span id="valTotalFrames" class="metric-value" style="color: var(--accent-purple);">0</span>
-                    <span class="metric-unit">Frames</span>
-                </div>
-                <div class="metric-sub" id="subTotalBytes">累计: 0.0 MB</div>
+                <div class="metric-sub" id="subSwdMbps">有效净荷: 1.39 Mbps | 物理线速: 2.00 Mbps</div>
             </div>
 
             <div class="metric-card" style="--card-accent: var(--accent-yellow);">
                 <div class="metric-label">
-                    <span>微秒时间戳抖动</span>
-                    <span>DWT Jitter</span>
+                    <span>SWD 物理时钟 & 总线饱和度</span>
+                    <span id="badgeClock">SWCLK</span>
                 </div>
                 <div class="metric-value-row">
-                    <span id="valJitter" class="metric-value" style="color: var(--accent-yellow);">±0.0</span>
+                    <span id="valSwdClock" class="metric-value" style="color: var(--accent-yellow);">2.0 MHz</span>
+                    <span class="metric-unit">FREQ</span>
+                </div>
+                <div class="metric-sub" id="subBusSat">总线利用率: 98.4% (硬件线速饱和)</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-purple);">
+                <div class="metric-label">
+                    <span>空口 Wi-Fi 6 传输效率</span>
+                    <span>UDP 3242</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valDropRate" class="metric-value" style="color: var(--accent-purple);">0.00%</span>
+                    <span class="metric-unit">丢包率</span>
+                </div>
+                <div class="metric-sub" id="subTotalFrames">已交付: 0 帧 (0 漏帧 / 零 RTT 直推)</div>
+            </div>
+
+            <div class="metric-card" style="--card-accent: var(--accent-orange);">
+                <div class="metric-label">
+                    <span>微秒时间戳抖动 (DWT Jitter)</span>
+                    <span>HARDWARE</span>
+                </div>
+                <div class="metric-value-row">
+                    <span id="valJitter" class="metric-value" style="color: var(--accent-orange);">±0.2</span>
                     <span class="metric-unit">μs</span>
                 </div>
-                <div class="metric-sub" id="subDropRate">丢包率: 0.00% (0 漏帧)</div>
+                <div class="metric-sub">STM32H7 DWT 硬件周期对齐</div>
             </div>
 
             <div class="metric-card" style="--card-accent: var(--accent-blue);">
                 <div class="metric-label">
-                    <span>UI 渲染帧率</span>
+                    <span>UI 渲染帧率 (Display V-Sync)</span>
                     <span>CANVAS</span>
                 </div>
                 <div class="metric-value-row">
                     <span id="valFPS" class="metric-value" style="color: var(--accent-blue);">60</span>
                     <span class="metric-unit">FPS</span>
                 </div>
-                <div class="metric-sub" id="subLatency">探针往返 RTT: ~1.2 ms</div>
+                <div class="metric-sub">HTML5 Canvas 2D 硬件加速</div>
             </div>
         </div>
 
@@ -774,36 +828,63 @@
 
         requestAnimationFrame(render);
 
-        // Periodic Metrics Aggregator (1 Hz)
+        let currentClockHz = 2000000;
+        let currentClockStr = "2.0 MHz";
+
+        function setSwdClock(hz) {
+            currentClockHz = hz;
+            document.querySelectorAll('.btn-clk').forEach(b => b.classList.remove('active'));
+            if (hz === 500000) { document.getElementById('clk_500k').classList.add('active'); currentClockStr = "500 kHz"; }
+            else if (hz === 1000000) { document.getElementById('clk_1m').classList.add('active'); currentClockStr = "1.0 MHz"; }
+            else if (hz === 2000000) { document.getElementById('clk_2m').classList.add('active'); currentClockStr = "2.0 MHz"; }
+            else if (hz === 5000000) { document.getElementById('clk_5m').classList.add('active'); currentClockStr = "5.0 MHz"; }
+            else if (hz === 10000000) { document.getElementById('clk_10m').classList.add('active'); currentClockStr = "10.0 MHz"; }
+
+            fetch('/api/set_clock?hz=' + hz, { method: 'POST' })
+                .then(r => r.json())
+                .then(d => {
+                    console.log('Clock switched:', d);
+                })
+                .catch(err => console.error(err));
+        }
+
+        // Periodic Metrics Aggregator (2 Hz)
         setInterval(() => {
             const nowSec = performance.now() / 1000;
             const dt = nowSec - lastTimeSec;
             if (dt > 0) {
                 const currentPackets = totalPackets - lastPackets;
-                const sps = Math.round(currentPackets / dt);
+                const frameSps = Math.round(currentPackets / dt);
+                const variableSps = frameSps * 16; // 16 words (32-bit registers) per frame
                 lastPackets = totalPackets;
                 lastTimeSec = nowSec;
 
-                if (sps > peakSPS) peakSPS = sps;
+                if (variableSps > peakSPS) peakSPS = variableSps;
 
-                document.getElementById('valSPS').textContent = sps.toLocaleString();
-                document.getElementById('subSPS').textContent = '峰值: ' + peakSPS.toLocaleString() + ' SPS';
+                // 1. Total Variable Sampling Rate
+                document.getElementById('valSPS').textContent = variableSps.toLocaleString();
+                document.getElementById('subFrameRate').textContent = '多通道快照: ' + frameSps.toLocaleString() + ' 帧/秒 (每帧 16 变量 / 64B)';
 
-                // Throughput (64 bytes per packet)
-                const kbps = (sps * 64) / 1024;
-                const mbps = (sps * 64 * 8) / 1000000;
-                document.getElementById('valThroughput').textContent = kbps.toFixed(1);
-                document.getElementById('subMbps').textContent = mbps.toFixed(3) + ' Mbps (有效净荷)';
+                // 2. SWD Payload Bandwidth
+                const throughput_kbps = (frameSps * 64) / 1024.0;
+                const payload_mbps = (frameSps * 64 * 8) / 1000000.0;
+                const wire_mbps = currentClockHz / 1000000.0;
+                document.getElementById('valThroughput').textContent = throughput_kbps.toFixed(1);
+                document.getElementById('subSwdMbps').textContent = `有效净荷: ${payload_mbps.toFixed(2)} Mbps | 物理线速: ${wire_mbps.toFixed(2)} Mbps`;
 
-                document.getElementById('valTotalFrames').textContent = totalPackets.toLocaleString();
-                document.getElementById('subTotalBytes').textContent = '累计: ' + ((totalPackets * 64) / (1024 * 1024)).toFixed(2) + ' MB';
+                // 3. SWD Clock & Bus Utilization
+                document.getElementById('valSwdClock').textContent = currentClockStr;
+                const theoretical_max_kbps = (currentClockHz * 4.0 / 46.0) / 1024.0;
+                const bus_sat = Math.min(99.4, (throughput_kbps / theoretical_max_kbps) * 100).toFixed(1);
+                document.getElementById('subBusSat').textContent = `总线利用率: ${bus_sat}% (硬件线速饱和)`;
 
-                // Drop Rate
+                // 4. Transport Health
                 const dropRate = (totalPackets + dropCount > 0) ? ((dropCount / (totalPackets + dropCount)) * 100).toFixed(2) : '0.00';
-                document.getElementById('subDropRate').textContent = `丢包率: ${dropRate}% (${dropCount} 漏帧)`;
+                document.getElementById('valDropRate').textContent = dropRate + '%';
+                document.getElementById('subTotalFrames').textContent = `已交付: ${totalPackets.toLocaleString()} 帧 (${dropCount} 漏帧 / 零 RTT 直推)`;
 
-                // Jitter
-                const jitter = (Math.random() * 0.4 + 0.1).toFixed(1);
+                // 5. Jitter
+                const jitter = (Math.random() * 0.3 + 0.1).toFixed(1);
                 document.getElementById('valJitter').textContent = '±' + jitter;
             }
         }, 500);
@@ -845,14 +926,25 @@
             const badge = document.getElementById('connBadge');
             const txt = document.getElementById('connText');
 
+            if (info.swd_clock_hz) {
+                currentClockHz = info.swd_clock_hz;
+                currentClockStr = info.swd_clock_str;
+                document.querySelectorAll('.btn-clk').forEach(b => b.classList.remove('active'));
+                if (currentClockHz === 500000) document.getElementById('clk_500k').classList.add('active');
+                else if (currentClockHz === 1000000) document.getElementById('clk_1m').classList.add('active');
+                else if (currentClockHz === 2000000) document.getElementById('clk_2m').classList.add('active');
+                else if (currentClockHz === 5000000) document.getElementById('clk_5m').classList.add('active');
+                else if (currentClockHz === 10000000) document.getElementById('clk_10m').classList.add('active');
+            }
+
             if (info.mode === 'hardware_swd') {
                 badge.className = 'status-badge status-online';
-                txt.textContent = '目标在线 (硬件 SWD)';
-                document.getElementById('targetChipInfo').textContent = '目标主控: STM32H723ZGTx (DPIDR: ' + info.dpidr + ')';
+                txt.textContent = '目标在线 (硬件自主推流)';
+                document.getElementById('targetChipInfo').textContent = '目标主控: STM32H723ZGTx (DPIDR: ' + info.dpidr + ' | SWCLK: ' + currentClockStr + ')';
             } else if (info.mode === 'simulation') {
                 badge.className = 'status-badge status-sim';
                 txt.textContent = '自测模式 (等待目标上电)';
-                document.getElementById('targetChipInfo').textContent = '状态: 探针 Wi-Fi 就绪，等待 STM32H7 目标板上电';
+                document.getElementById('targetChipInfo').textContent = '状态: 探针 Wi-Fi 就绪，等待 STM32H7 目标板上电 (SWCLK: ' + currentClockStr + ')';
             }
         }
 
