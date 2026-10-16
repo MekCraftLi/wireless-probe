@@ -13,6 +13,7 @@
 #include "wifi_manager.h"
 #include "net_sockets.h"
 #include "qspi_slave_gdma.h"
+#include "web_server.h"
 
 static const char *TAG = "c5_bridge";
 
@@ -158,6 +159,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     ESP_ERROR_CHECK(wifi_manager_init());
+    ESP_ERROR_CHECK(web_server_init());
 
     net_sockets_set_rx_callback(on_network_rx);
     ESP_ERROR_CHECK(net_sockets_init());

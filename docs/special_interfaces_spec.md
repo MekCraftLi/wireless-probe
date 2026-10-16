@@ -17,6 +17,7 @@
 
 | 端口号 | 传输协议 | 通道名称 | QoS 服务等级 | 功能定义 |
 | :---: | :---: | :--- | :--- | :--- |
+| **80** | **TCP (HTTP)**| **Web Provisioning Portal (WEB)** | Interactive | 响应式 Web 配网控制台与 RESTful 接口 (/api/status, /api/scan, /api/connect, /api/reset) |
 | **3240** | **TCP** | **Control Plane (CTRL)** | DSCP EF (0xB8, 最低延迟) | 标准 CMSIS-DAP 命令 + **Vendor 扩展自主控制命令 (0x80~0x83)** |
 | **3241** | **TCP** | **Bulk Memory Plane (BULK)** | Best Effort (高吞吐) | 高速 Flash 固件下载与大规模 RAM 块写入通道 |
 | **3242** | **UDP** | **Telemetry Stream Plane (TRACE)** | DSCP EF (实时流推流) | **零 RTT 硬件自主 RTP 遥测数据包推流通道** |
