@@ -298,6 +298,12 @@ int wifi_manager_scan_networks(wifi_scan_item_t *out_list, int max_items) {
         .channel = 0,
         .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = {
+            .active = {
+                .min = 20,
+                .max = 50,
+            },
+        },
     };
 
     ESP_LOGI(TAG, "Starting synchronous Wi-Fi scan...");
